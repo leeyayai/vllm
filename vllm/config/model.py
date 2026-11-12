@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+# 初始化依赖、定义配置项的类型约束（Type Hints）、处理延迟加载（Lazy Loading）以及定义模型运行模式的枚举。
+
 import warnings
 from collections.abc import Callable
 from dataclasses import InitVar, field
@@ -12,6 +14,8 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic.dataclasses import dataclass
 
 import vllm.envs as envs
+
+# 导入了 vLLM 处理多模态 (MultiModal)、池化 (Pooling/Embedding)、调度器 (Scheduler) 和模型架构的配置类。
 from vllm.config.model_arch import (
     ModelArchitectureConfig,
 )
@@ -51,7 +55,7 @@ from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
-if TYPE_CHECKING:
+if TYPE_CHECKING: # Lazy Loading 机制
     from transformers import PretrainedConfig
 
     import vllm.model_executor.layers.quantization as me_quant
@@ -74,28 +78,29 @@ else:
 
 logger = init_logger(__name__)
 
-RunnerOption = Literal["auto", RunnerType]
+RunnerOption = Literal["auto", RunnerType] # 选择不同的模型运行模式
 ConvertType = Literal["none", "embed", "classify", "reward", "mm_encoder_only"]
-ConvertOption = Literal["auto", ConvertType]
-TokenizerMode = Literal["auto", "hf", "slow", "mistral", "deepseek_v32"]
-ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
+ConvertOption = Literal["auto", ConvertType] 
+TokenizerMode = Literal["auto", "hf", "slow", "mistral", "deepseek_v32"] # 选择不同的分词器模式
+# "auto" 表示根据模型架构自动选择，"hf" 表示使用 Hugging Face 分词器，"slow" 表示使用慢速分词器，"mistral" 表示使用 Mistral 分词器，"deepseek_v32" 表示使用 DeepSeek V3.2 分词器。
+ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"] 
 LogprobsMode = Literal[
     "raw_logits", "raw_logprobs", "processed_logits", "processed_logprobs"
 ]
 HfOverrides = dict[str, Any] | Callable[[PretrainedConfig], PretrainedConfig]
 ModelImpl = Literal["auto", "vllm", "transformers", "terratorch"]
-LayerBlockType = Literal["attention", "linear_attention", "mamba"]
+LayerBlockType = Literal["attention", "linear_attention", "mamba"] # 选择不同的层块类型
 
 _RUNNER_CONVERTS: dict[RunnerType, list[ConvertType]] = {
     "generate": [],
     "pooling": ["embed", "classify", "reward"],
     "draft": [],
-}
+} # 对应：RunnerOption，pooling  模式可以转换为 embed（向量检索）、classify（分类）或 reward（奖励模型）。
 
 AttnTypeStr = Literal[
     "decoder", "encoder", "encoder_only", "encoder_decoder", "attention_free", "hybrid"
-]
-
+] # 注意力类型
+#  Decoder（如 Llama）、Encoder-Decoder（如 T5）、纯 Encoder（如 BERT）到 Hybrid（混合架构，如 Jamba/Mamba-Transformer）和 Attention Free（纯 SSM）的所有架构
 
 @config
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
@@ -105,22 +110,25 @@ class ModelConfig:
     model: str = "Qwen/Qwen3-0.6B"
     """Name or path of the Hugging Face model to use. It is also used as the
     content for `model_name` tag in metrics output when `served_model_name` is
-    not specified."""
+    not specified.""" # Hugging Face 模型名称或本地路径。
     model_weights: str = ""
     """Original model weights path. Used when the model is pulled from object 
     storage (e.g., RunAI) to preserve the original URI while `model` points to 
-    the local directory."""
+    the local directory.""" # Hugging Face 模型名称或本地路径。主要用于对象存储（如 RunAI）场景，保留原始 URI，而 model 指向本地下载目录。
     runner: RunnerOption = "auto"
     """The type of model runner to use. Each vLLM instance only supports one
-    model runner, even if the same model can be used for multiple types."""
-    convert: ConvertOption = "auto"
+    model runner, even if the same model can be used for multiple types.""" # 选择不同的模型运行模式
+    #  要使用的模型运行器类型。每个vLLM实例只支持一个模型运行器，即使同一个模型可以用于多个类型。
+    convert: ConvertOption = "auto" # 选择不同的模型转换模式,例如，将普通的文本生成模型转换为池化（Pooling）任务模型。
     """Convert the model using adapters defined in
     [vllm.model_executor.models.adapters][]. The most common use case is to
     adapt a text generation model to be used for pooling tasks."""
-    tokenizer: str = Field(default=None)
+    # 使用[vllm.model]中定义的适配器转换模型_executor.models.adapters][]。最常见的用例是调整文本生成模型以用于池化任务。
+    tokenizer: str = Field(default=None) # 选择不同的分词器
     """Name or path of the Hugging Face tokenizer to use. If unspecified, model
     name or path will be used."""
-    tokenizer_mode: TokenizerMode | str = "auto"
+    # 要使用的“Hugging Face”分词器的名称或路径。如果未指定，则使用modelname或path。
+    tokenizer_mode: TokenizerMode | str = "auto" # 选择不同的分词器模式
     """Tokenizer mode:\n
     - "auto" will use the tokenizer from `mistral_common` for Mistral models
     if available, otherwise it will use the "hf" tokenizer.\n
@@ -129,9 +137,10 @@ class ModelConfig:
     - "mistral" will always use the tokenizer from `mistral_common`.\n
     - "deepseek_v32" will always use the tokenizer from `deepseek_v32`.\n
     - Other custom values can be supported via plugins."""
-    trust_remote_code: bool = False
+    # 支持自动选择、HuggingFace 默认、慢速 Python 实现、Mistral 专用、DeepSeek V3.2 专用等。
+    trust_remote_code: bool = False # 信任远程代码
     """Trust remote code (e.g., from HuggingFace) when downloading the model
-    and tokenizer."""
+    and tokenizer.""" # 是否信任并执行从 HuggingFace 下载的远程 Python 代码（有安全风险，需显式开启）
     dtype: ModelDType | torch.dtype = "auto"
     """Data type for model weights and activations:\n
     - "auto" will use FP16 precision for FP32 and FP16 models, and BF16
@@ -141,8 +150,10 @@ class ModelConfig:
     - "bfloat16" for a balance between precision and range.\n
     - "float" is shorthand for FP32 precision.\n
     - "float32" for FP32 precision."""
+    # 模型权重和激活的数据类型,默认使用 FP16 精度。
     seed: int = 0
     """Random seed for reproducibility.
+    # 随机种子。注意：在张量并行（Tensor Parallelism）下，必须设置全局一致的 seed，否则不同 Worker 采样结果会不一致。
 
     We must set the global seed because otherwise,
     different tensor parallel workers would sample different tokens,
@@ -186,11 +197,12 @@ class ModelConfig:
     otherwise it will find the largest length that can be accommodated."""
     spec_target_max_model_len: int | None = None
     """Specify the maximum length for spec decoding draft models."""
-    quantization: QuantizationMethods | str | None = None
+    quantization: QuantizationMethods | str | None = None # 量化方法
     """Method used to quantize the weights. If `None`, we first check the
     `quantization_config` attribute in the model config file. If that is
     `None`, we assume the model weights are not quantized and use `dtype` to
-    determine the data type of the weights."""
+    determine the data type of the weights.""" 
+    # 用于量化权重的方法。如果“None”，我们首先检查“量子化”_属性。如果是‘ none ’，我们假设模型权重没有量化，并使用‘ dtype ’来确定权重的数据类型
     allow_deprecated_quantization: bool = False
     """Whether to allow deprecated quantization methods."""
     enforce_eager: bool = False
@@ -198,6 +210,7 @@ class ModelConfig:
     graph and always execute the model in eager mode. If False, we will use
     CUDA graph and eager execution in hybrid for maximal performance and
     flexibility."""
+    # 否强制使用 PyTorch Eager 模式。设为 True 会禁用 CUDA Graph，牺牲部分性能以换取调试的灵活性。
     enable_return_routed_experts: bool = False
     """Whether to return routed experts."""
     max_logprobs: int = 20
@@ -205,6 +218,7 @@ class ModelConfig:
     specified in `SamplingParams`. The default value comes the default for the
     OpenAI Chat Completions API. -1 means no cap, i.e. all (output_length *
     vocab_size) logprobs are allowed to be returned and it may cause OOM."""
+    # 在‘ SamplingParams ’中指定‘ logprobs ’时返回的最大日志概率数。默认值是openai聊天完成API的默认值默认 20。-1表示没有上限，即所有输出_长度*词汇_允许返回logprobs，它可能导致OOM
     logprobs_mode: LogprobsMode = "raw_logprobs"
     """Indicates the content returned in the logprobs and prompt_logprobs.
     Supported mode:
@@ -213,6 +227,8 @@ class ModelConfig:
     Processed means the values after applying all processors, including
     temperature and top_k/top_p.
     """
+    # 显示logprobs和提示符返回的内容_logprobs。支持方式：1)raw_Logprobs, 2)已处理_Logprobs, 3) raw_逻辑，经过处理_分对数。
+    # Raw表示在应用任何logit处理器之前的值，例如坏单词。已处理是指应用所有处理器后的值，包括温度和顶部_k /最高_p
     disable_sliding_window: bool = False
     """Whether to disable sliding window. If True, we will disable the sliding
     window functionality of the model, capping to sliding window size. If the
@@ -294,6 +310,7 @@ class ModelConfig:
     pooler_config: PoolerConfig | None = None
     """Pooler config which controls the behaviour of output pooling in pooling
     models."""
+    # 当 runner="pooling" 时生效，控制 Embedding、分类或奖励模型（Reward Model）的输出池化行为。
 
     # Multimodal config and init vars
     multimodal_config: MultiModalConfig | None = None
@@ -312,7 +329,7 @@ class ModelConfig:
     skip_mm_profiling: InitVar[bool | None] = None
     video_pruning_rate: InitVar[float | None] = None
 
-    def compute_hash(self) -> str:
+    def compute_hash(self) -> str: # 生成计算图的唯一指纹
         """
         WARNING: Whenever a new field is added to this config,
         ensure that it is included in the factors list if
@@ -324,6 +341,10 @@ class ModelConfig:
         excluding anything before input ids/embeddings and after
         the final hidden states.
         """
+        # 如果给 ModelConfig 新增字段，必须评估它是否影响计算图。如果影响，绝对不能把它加到 ignored_factors 里，否则会导致严重的推理错误。
+        # vLLM 使用 CUDA Graph 等底层优化技术，这些技术依赖于固定的计算图结构。
+        # 如果模型的配置（如层数、隐藏层大小、注意力头数等）发生变化，计算图就会改变，之前编译的 CUDA Graph 就会失效。
+        # 这个哈希值用于缓存和校验计算图
         ignored_factors = {
             "runner",
             "convert",
@@ -358,14 +379,16 @@ class ModelConfig:
             "mm_encoder_tp_mode",
             "interleave_mm_strings",
             "skip_mm_profiling",
-        }
+        } # 忽略的因子，因为它们不影响计算图结构
+        # 这些参数（如 tokenizer、seed、logprobs_mode、多模态处理参数等）
+        # 只影响输入/输出的预处理或后处理，而不改变模型内部从 input_ids 到 hidden_states 的核心计算图结构
 
         from vllm.config.utils import get_hash_factors, hash_factors
 
         factors = get_hash_factors(self, ignored_factors)
         return hash_factors(factors)
 
-    def _update_nested(
+    def _update_nested( # 递归地更新嵌套的配置对象或字典。
         self,
         target: PretrainedConfig | dict[str, Any],
         updates: dict[str, Any],
@@ -392,8 +415,12 @@ class ModelConfig:
                 target[key] = value
             else:
                 setattr(target, key, value)
+            # If the value is a dict and the target is a PretrainedConfig, we can set it directly.
+            # Hugging Face 的 PretrainedConfig 通常是嵌套的（例如 text_config 里面还有 llm_config）。
+            # 普通的 dict.update() 会直接覆盖整个子字典，导致丢失原有配置。
+            # 如果 updates 中的值是一个字典，且 target 中对应的键也存在一个对象/字典，代码会递归进入下一层进行更新，而不是直接覆盖。
 
-    def _apply_dict_overrides(
+    def _apply_dict_overrides( # 将用户传入的覆盖参数应用到 HF 配置上。
         self,
         config: PretrainedConfig,
         overrides: dict[str, Any],
@@ -405,7 +432,7 @@ class ModelConfig:
             attr = getattr(config, key, None)
             if attr is not None and isinstance(attr, PretrainedConfig):
                 # It's a nested config - recursively update it
-                self._update_nested(attr, value)
+                self._update_nested(attr, value) # 调用上面哪个函数，递归更新嵌套的配置对象或字典。
             else:
                 # It's a dict-valued parameter - set it directly
                 setattr(config, key, value)
@@ -426,6 +453,8 @@ class ModelConfig:
         skip_mm_profiling: bool | None,
         video_pruning_rate: float | None,
     ) -> None:
+        # ModelConfig 的“超级初始化器”或“配置解析中枢”。它的核心职责是：
+        # 接收用户的原始输入，进行复杂的逻辑推导、校验、默认值填充，最终生成 vLLM 引擎运行所需的标准化内部配置。
         # Keep set served_model_name before maybe_model_redirect(self.model)
         self.served_model_name = get_served_model_name(
             self.model, self.served_model_name
@@ -1363,7 +1392,8 @@ class ModelConfig:
             )
         return diff_sampling_param
 
-    @property
+    @property # 装饰器，只读属性
+    # 检查模型是否为编码器-解码器架构。 
     def is_encoder_decoder(self) -> bool:
         """Extract the HF encoder/decoder model flag."""
         return is_encoder_decoder(self.hf_config)

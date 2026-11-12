@@ -53,6 +53,7 @@ class SchedulerConfig:
     The default value here is mainly for convenience when testing.
     In real usage, this should be set in `EngineArgs.create_engine_config`.
     """
+    # 单次迭代（iteration）中允许处理的最大 Token 数量。这是控制 GPU 显存占用和计算吞吐量的关键
 
     max_num_seqs: int = Field(default=DEFAULT_MAX_NUM_SEQS, ge=1)
     """Maximum number of sequences to be processed in a single iteration.
@@ -60,20 +61,24 @@ class SchedulerConfig:
     The default value here is mainly for convenience when testing.
     In real usage, this should be set in `EngineArgs.create_engine_config`.
     """
+    # 单次迭代中允许处理的最大并发序列（Sequence）数量。
 
     max_num_partial_prefills: int = Field(default=1, ge=1)
     """For chunked prefill, the maximum number of sequences that can be
     partially prefilled concurrently."""
+    # 允许同时进行“部分预填充”的最大序列数。
 
     max_long_partial_prefills: int = Field(default=1, ge=1)
     """For chunked prefill, the maximum number of prompts longer than
     long_prefill_token_threshold that will be prefilled concurrently. Setting
     this less than max_num_partial_prefills will allow shorter prompts to jump
     the queue in front of longer prompts in some cases, improving latency."""
+    # 允许同时进行“部分预填充”的最大长序列数（超过 long_prefill_token_threshold 的序列）。将其设置为小于 max_num_partial_prefills 可以在某些情况下让较短的提示优先于较长的提示，从而改善延迟。
 
     long_prefill_token_threshold: int = 0
     """For chunked prefill, a request is considered long if the prompt is
     longer than this number of tokens."""
+    # 预填充请求的阈值，超过该阈值的提示会被认为是“长提示”。默认值为 0，即所有提示都被认为是“短提示”。  
 
     enable_chunked_prefill: bool = True
     """If True, prefill requests can be chunked based
@@ -88,7 +93,7 @@ class SchedulerConfig:
 
     # TODO (ywang96): Make this configurable.
     max_num_encoder_input_tokens: int = Field(init=False)
-    """Multimodal encoder compute budget, only used in V1.
+    """Multimodal encoder compute budget, only used in V1. # 多模态编码器的预算，仅在 V1 中使用。
 
     NOTE: This is not currently configurable. It will be overridden by
     max_num_batched_tokens in case max multimodal embedding size is larger."""
@@ -106,6 +111,7 @@ class SchedulerConfig:
     of arrival.\n
     - "priority" means requests are handled based on given priority (lower
     value means earlier handling) and time of arrival deciding any ties)."""
+    # 调度策略。支持 "fcfs"（先来先服务）或 "priority"（基于优先级的调度，优先级数值越小越先执行，相同优先级按到达时间排序）。
 
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to
@@ -114,6 +120,7 @@ class SchedulerConfig:
     (like text tokens TTTT followed by image tokens IIIIIIIIII) where only
     some image tokens can be scheduled (like TTTTIIIII, leaving IIIII),
     it will be scheduled as TTTT in one step and IIIIIIIIII in the next."""
+    # 如果为 True，在多模态混合输入（如文本+图片）时，不会将同一个多模态请求拆分到多个批次中，而是保证图片或完整文本在一个批次内处理完。
 
     # scheduler class or path. "vllm.v1.core.sched.scheduler.Scheduler"
     # (default) or "mod.custom_class".
@@ -129,6 +136,7 @@ class SchedulerConfig:
     If set to None, the default value will be determined based on the environment
     and starting configuration.
     """
+    # 控制 KV Cache 管理器是否为所有注意力层分配相同大小的缓存（针对包含 Full Attention 和 Sliding Window Attention 的混合架构模型）。
 
     async_scheduling: bool = Field(default=None)
     """If set to False, disable async scheduling. Async scheduling helps to
@@ -137,12 +145,17 @@ class SchedulerConfig:
     speculative decoding and pipeline parallelism, and will be automatically
     disabled in those cases.
     """
+    # 如果为 False，禁用异步调度。异步调度可以帮助避免 GPU 利用率上的间隙，从而提高延迟和吞吐量。
+    # 它目前不支持一些功能（如推测解码和管道并行），并自动在这些情况下禁用。
 
     stream_interval: int = Field(default=1, ge=1)
     """The interval (or buffer size) for streaming in terms of token length.
     A smaller value (1) makes streaming smoother by sending each token immediately,
     while a larger value (e.g., 10) reduces host overhead and may increase throughput
     by batching multiple tokens before sending."""
+    # 流式输出的间隔（或缓冲区大小），以令牌长度为单位。
+    # 较小的值（1）使流式输出更平滑，每个令牌立即发送。用户几乎感觉不到卡顿。
+    # 较大的值（例如 10）减少了主机开销并可能提高吞吐量，通过在发送之前批量多个令牌。
 
     @staticmethod
     def default_factory(**kwargs):
@@ -157,11 +170,11 @@ class SchedulerConfig:
 
     def get_scheduler_cls(self) -> type["SchedulerInterface"]:
         if self.scheduler_cls is None:
-            if self.async_scheduling:
-                from vllm.v1.core.sched.async_scheduler import AsyncScheduler
+            if self.async_scheduling: # 异步调度
+                from vllm.v1.core.sched.async_scheduler import AsyncScheduler # 异步调度器
 
                 return AsyncScheduler
-            from vllm.v1.core.sched.scheduler import Scheduler
+            from vllm.v1.core.sched.scheduler import Scheduler # 同步调度器
 
             return Scheduler
 
@@ -212,6 +225,7 @@ class SchedulerConfig:
         return None if value is None else handler(value)
 
     def __post_init__(self, max_model_len: int, is_encoder_decoder: bool) -> None:
+        # 在引擎启动前，确保各项调度参数的合法性，并根据模型架构自动调整关键配置，以防止运行时崩溃或性能异常
         if is_encoder_decoder:
             # Chunked prefill should be disabled for encoder-decoder models.
             self.disable_chunked_mm_input = True

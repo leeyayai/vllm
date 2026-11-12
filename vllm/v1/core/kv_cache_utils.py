@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""KV-Cache Utilities."""
+"""KV-Cache Utilities.
+KV cache 工具函数。
+"""
 
 import copy
 import os
@@ -29,18 +31,27 @@ from vllm.v1.request import Request
 from vllm.v1.utils import tensor_data
 
 # BlockHash represents the hash of a single KV-cache block used for
+# BlockHash 表示用于前缀缓存的单个 KV cache block 的哈希值。
 # prefix caching.  Treating it as a distinct type from `bytes` helps
+# 将其定义为独立于 `bytes` 的类型，
 # catch accidental misuse when passing around raw byte strings.
+# 有助于发现误将原始字节串传入错误位置的情况。
 BlockHash = NewType("BlockHash", bytes)
 
 # `BlockHashWithGroupId` combines a `BlockHash` with its KV cache group ID.
+# `BlockHashWithGroupId` 将 `BlockHash` 与 KV cache group ID 组合在一起。
 # It is represented as raw bytes for compactness and efficiency. The helper
+# 为了紧凑和高效，它以原始字节表示。下方的辅助函数会
 # functions below pack/unpack the `BlockHash` and group id into/from the key.
+# 将 `BlockHash` 和 group ID 打包进键中，或从键中解包。
 BlockHashWithGroupId = NewType("BlockHashWithGroupId", bytes)
 
 # ExternalBlockHash is used for reproducible prefix-cache block hashing.
+# ExternalBlockHash 用于生成可复现的前缀缓存 block 哈希。
 # It's a union of `bytes` and `int` to keep backward compatibility
+# 它是 `bytes` 与 `int` 的联合类型，以保持向后兼容；
 # after we default block hashing to use sha256 bytes.
+# block 哈希默认改用 sha256 字节值后仍可兼容旧格式。
 ExternalBlockHash: TypeAlias = bytes | int
 
 
@@ -48,21 +59,29 @@ def make_block_hash_with_group_id(
     block_hash: BlockHash, group_id: int
 ) -> BlockHashWithGroupId:
     """Pack a `BlockHash` and group id into a `BlockHashWithGroupId`.
+    将 `BlockHash` 和 group ID 打包为 `BlockHashWithGroupId`。
 
     The group id is encoded using 4 bytes in big-endian order and appended to
+    group ID 使用 4 字节大端序编码，并追加到
     the block hash bytes.  This representation avoids creating tuples while
+    block 哈希字节之后。此表示方式无需创建元组，
     still allowing us to recover both components when needed.
+    同时仍可在需要时还原这两个组成部分。
     """
     return BlockHashWithGroupId(block_hash + group_id.to_bytes(4, "big", signed=False))
 
 
 def get_block_hash(key: BlockHashWithGroupId) -> BlockHash:
-    """Extract the `BlockHash` from a `BlockHashWithGroupId`."""
+    """Extract the `BlockHash` from a `BlockHashWithGroupId`.
+    从 `BlockHashWithGroupId` 中提取 `BlockHash`。
+    """
     return BlockHash(key[:-4])
 
 
 def get_group_id(key: BlockHashWithGroupId) -> int:
-    """Extract the group id from a `BlockHashWithGroupId`."""
+    """Extract the group id from a `BlockHashWithGroupId`.
+    从 `BlockHashWithGroupId` 中提取 group ID。
+    """
     return int.from_bytes(key[-4:], "big", signed=False)
 
 
@@ -75,13 +94,19 @@ def maybe_convert_block_hash(hash_bytes: BlockHash) -> ExternalBlockHash:
 logger = init_logger(__name__)
 
 # The hash seed for the first block of any prefix block sequence.
+# 任意前缀 block 序列中第一个 block 的哈希种子。
 #
 # We use a random value to avoid hash collisions or PYTHONHASHSEED environment
+# 使用随机值可避免哈希冲突；如果设置了 PYTHONHASHSEED 环境变量，
 # variable if set such that processes can share the seed if needed. This aligns
+# 各进程也可以按需共享该种子。这与
 # with the behavior of Python's hash() function, which also uses a random seed
+# Python 的 hash() 函数行为一致：未设置 PYTHONHASHSEED 时，
 # if PYTHONHASHSEED is not set.
+# 它同样会使用随机种子。
 #
 # The function `init_none_hash` initializes this variable globally.
+# 函数 `init_none_hash` 会全局初始化此变量。
 NONE_HASH: BlockHash
 _CBOR_HASH_FUNCTIONS = frozenset({sha256_cbor, xxhash_cbor})
 
@@ -106,22 +131,31 @@ def init_none_hash(hash_fn: Callable[[Any], bytes]):
 
 @dataclass
 class KVCacheBlock:
-    """KV-cache block metadata."""
+    """KV-cache block metadata.
+    KV cache block 的元数据。
+    """
 
     # Block ID, ranging from 0 to num_gpu_blocks - 1.
+    # block ID，范围为 0 到 num_gpu_blocks - 1。
     block_id: int
     # Reference count.
+    # 引用计数。
     ref_cnt: int = 0
     # The hash key (block hash + group id) of the block, only available
+    # 该 block 的哈希键（block 哈希 + group ID），仅当 block 已填满并缓存后
     # when the block is full and cached.
+    # 才会有值。
     _block_hash: BlockHashWithGroupId | None = None
 
     # Used to construct a doubly linked list for free blocks.
+    # 用于为 free block 构建双向链表。
     # These two attributes should only be manipulated by FreeKVCacheBlockQueue.
+    # 这两个属性只能由 FreeKVCacheBlockQueue 修改。
     prev_free_block: "KVCacheBlock | None" = None
     next_free_block: "KVCacheBlock | None" = None
 
     # Whether the block is a null block that should never be cached.
+    # 该 block 是否为永远不应缓存的空 block。
     is_null: bool = False
 
     @property
@@ -136,12 +170,16 @@ class KVCacheBlock:
         self._block_hash = block_hash
 
     def reset_hash(self):
-        """Reset the block hash when the block is evicted."""
+        """Reset the block hash when the block is evicted.
+        淘汰 block 时重置其哈希值。
+        """
         self._block_hash = None
 
     def __repr__(self) -> str:
         # Use block_id instead of KVCacheBlock object to avoid calling __repr__
+        # 使用 block_id 而非 KVCacheBlock 对象，避免对 KVCacheBlock 调用 __repr__ 时
         # on KVCacheBlock object recursively.
+        # 递归展开对象本身。
         prev_block_id = self.prev_free_block.block_id if self.prev_free_block else None
         next_block_id = self.next_free_block.block_id if self.next_free_block else None
         return (
@@ -155,30 +193,47 @@ class KVCacheBlock:
 
 class FreeKVCacheBlockQueue:
     """This class organizes a list of KVCacheBlock objects to a doubly linked
+    此类将 KVCacheBlock 对象列表组织成 free block 的双向链表。
     list of free blocks. We implement this class instead of using Python
+    我们实现此类而不使用 Python 内置的 deque，
     builtin deque to support removing a block in the middle of the queue
+    以支持在 O(1) 时间内
     in O(1) time. To close the performance gap to the builtin deque which is
+    移除队列中间的 block。为了缩小与 C++ 实现的内置 deque 之间的性能差距，
     implemented in C++, this class does not allocate any Python objects when
+    此类在操作链表时不会分配 Python 对象；
     manipulating the linked list. Instead, this class manipulates the
+    而是直接操作给定 block 的
     prev_free_block and next_free_block attributes of the given blocks.
+    prev_free_block 和 next_free_block 属性。
 
     The queue is ordered by block ID in the beginning. When a block is allocated
+    队列初始按 block ID 排序。block 被分配后又释放时，会按以下淘汰顺序
     and then freed, it will be appended back with the eviction order:
+    追加回队列：
     1. The least recent used block is at the front (LRU).
+    1. 最近最少使用的 block 位于队首（LRU）。
     2. If two blocks have the same last accessed time (allocated by the
+    2. 如果两个 block 的最后访问时间相同（由同一序列分配），
        same sequence), the one with more hash tokens (the tail of a block
+       哈希 token 较多的 block（block 链的尾部）排在前面，
        chain) is at the front.
+       优先淘汰。
     Note that we maintain this order by reversing the block order when free
+    注意：我们通过释放请求的 block 时反转 block 顺序来维持该顺序。
     blocks of a request. This operation is outside of this class.
+    该操作在此类之外执行。
 
     Args:
         blocks: A list of KVCacheBlock objects.
+        blocks：KVCacheBlock 对象列表。
     """
 
     def __init__(self, blocks: list[KVCacheBlock]) -> None:
         self.num_free_blocks = len(blocks)
 
         # Initialize doubly links of consecutive blocks
+        # 初始化相邻 block 之间的双向链接。
         for i in range(self.num_free_blocks):
             if i > 0:
                 blocks[i].prev_free_block = blocks[i - 1]
@@ -186,15 +241,21 @@ class FreeKVCacheBlockQueue:
                 blocks[i].next_free_block = blocks[i + 1]
 
         # Create a fake head and a tail block for the doubly linked list to
+        # 为双向链表创建虚拟头节点和尾节点，
         # reduce branching in the code
+        # 以减少代码中的分支判断。
         #
         # The implementation guaranteed that the fake head and tail
+        # 实现保证虚拟头节点和尾节点永远不会被弹出，
         # are NEVER got popped, so we could safely assume each real blocks
+        # 因此可以安全地假设队列中的每个实际 block
         # in the queue has prev and next blocks.
+        # 都有前驱和后继节点。
         self.fake_free_list_head = KVCacheBlock(block_id=-1)
         self.fake_free_list_tail = KVCacheBlock(block_id=-1)
         if self.num_free_blocks > 0:
             # Connect fake_head and fake_tail to the first and last block
+            # 将虚拟头节点和尾节点分别连接到第一个和最后一个 block。
             # respectively.
             self.fake_free_list_head.next_free_block = blocks[0]
             blocks[0].prev_free_block = self.fake_free_list_head
@@ -202,14 +263,17 @@ class FreeKVCacheBlockQueue:
             blocks[-1].next_free_block = self.fake_free_list_tail
         else:
             # For empty list, simply connect the fake head and tail.
+            # 列表为空时，直接连接虚拟头节点和尾节点。
             self.fake_free_list_head.next_free_block = self.fake_free_list_tail
             self.fake_free_list_tail.prev_free_block = self.fake_free_list_head
 
     def popleft(self) -> KVCacheBlock:
         """Pop the first free block and reduce num_free_blocks by 1.
+        弹出队首的 free block，并将 num_free_blocks 减 1。
 
         Returns:
             The first free block.
+            队首的 free block。
         """
         if (
             self.fake_free_list_head.next_free_block is self.fake_free_list_tail
@@ -225,18 +289,23 @@ class FreeKVCacheBlockQueue:
 
         if first_block.next_free_block is None:
             # This should not happen if the block is from the free list.
+            # 如果该 block 来自 free list，此情况不应发生。
             # It indicates a bug in the caller's logic.
+            # 这表示调用方逻辑存在错误。
             raise RuntimeError(
                 "Invalid block found in popleft() "
                 "which doesn't have a valid next_free_block"
             )
 
         # Connect fake_head and the next block of first_block (i.e. second block
+        # 将虚拟头节点连接到 first_block 的后继节点（即第二个 block
         # or fake tail).
+        # 或虚拟尾节点）。
         self.fake_free_list_head.next_free_block = first_block.next_free_block
         first_block.next_free_block.prev_free_block = self.fake_free_list_head
 
         # Remove the block from the linked list.
+        # 从链表中移除此 block。
         first_block.prev_free_block = first_block.next_free_block = None
 
         self.num_free_blocks -= 1
@@ -244,12 +313,15 @@ class FreeKVCacheBlockQueue:
 
     def popleft_n(self, n: int) -> list[KVCacheBlock]:
         """Pop the first n free blocks and reduce num_free_blocks by n.
+        弹出队首的 n 个 free block，并将 num_free_blocks 减少 n。
 
         Args:
             n: The number of blocks to pop.
+            n：要弹出的 block 数量。
 
         Returns:
             A list of n free blocks.
+            包含 n 个 free block 的列表。
         """
         if n == 0:
             return []
@@ -258,6 +330,7 @@ class FreeKVCacheBlockQueue:
 
         curr_block = self.fake_free_list_head.next_free_block
         # Pop n blocks from the head of the list
+        # 从队列头部弹出 n 个 block。
         ret = []
         for _ in range(n):
             assert curr_block is not None
@@ -265,42 +338,55 @@ class FreeKVCacheBlockQueue:
             last_block = curr_block
             curr_block = curr_block.next_free_block
             # Reset prev_free_block and next_free_block of all popped blocks
+            # 重置所有已弹出 block 的 prev_free_block 和 next_free_block。
             last_block.prev_free_block = None
             last_block.next_free_block = None
 
         if curr_block is not None:
             # The queue is not empty, connect the fake head to
+            # 队列不为空时，将虚拟头节点连接到
             # the new first block.
+            # 新的首个 block。
             self.fake_free_list_head.next_free_block = curr_block
             curr_block.prev_free_block = self.fake_free_list_head
         return ret
 
     def remove(self, block: KVCacheBlock) -> None:
         """Remove a block in the free list and reduce num_free_blocks by 1.
+        从 free list 中移除一个 block，并将 num_free_blocks 减 1。
 
         Args:
             block: The block to remove.
+            block：要移除的 block。
         """
         if block.prev_free_block is None or block.next_free_block is None:
             # This should not happen if the block is from the free list.
+            # 如果该 block 位于 free list，此情况不应发生。
             # It indicates a bug in the caller's logic.
+            # 这表示调用方逻辑存在错误。
             raise RuntimeError(f"remove() called on an invalid block: {block}")
 
         # Link the previous block to the next block.
+        # 将前一个 block 与后一个 block 相连。
         block.prev_free_block.next_free_block = block.next_free_block
         # Link the next block to the previous block.
+        # 将后一个 block 与前一个 block 相连。
         block.next_free_block.prev_free_block = block.prev_free_block
 
         # Remove the block from the linked list.
+        # 从链表中移除此 block。
         block.prev_free_block = block.next_free_block = None
         self.num_free_blocks -= 1
 
     def append(self, block: KVCacheBlock) -> None:
         """Put a block back into the free list and increase
+        将一个 block 放回 free list，并将
         num_free_blocks by 1.
+        num_free_blocks 加 1。
 
         Args:
             block: The block to append.
+            block：要追加的 block。
         """
         if self.fake_free_list_tail.prev_free_block is None:
             raise RuntimeError(
@@ -309,20 +395,24 @@ class FreeKVCacheBlockQueue:
         last_block: KVCacheBlock = self.fake_free_list_tail.prev_free_block
 
         # Connect the new block after the last block.
+        # 将新 block 连接到当前最后一个 block 之后。
         last_block.next_free_block = block
         block.prev_free_block = last_block
 
         # Connect the fake tail after the new block.
+        # 将虚拟尾节点连接到新 block 之后。
         block.next_free_block = self.fake_free_list_tail
         self.fake_free_list_tail.prev_free_block = block
 
         self.num_free_blocks += 1
 
     def append_n(self, blocks: list[KVCacheBlock]) -> None:
-        """Put a list of blocks back into the free list
+        """Put a list of blocks back into the free list.
+        将一组 block 放回 free list。
 
         Args:
             blocks: The blocks to append.
+            blocks：要追加的 block 列表。
         """
         if len(blocks) == 0:
             return
@@ -332,12 +422,14 @@ class FreeKVCacheBlockQueue:
             "prev_free_block of fake_free_list_tail should always exist"
         )
         # Add inter-connections between consecutive blocks
+        # 在相邻 block 之间建立连接。
         for block in blocks:
             block.prev_free_block = last_block
             last_block.next_free_block = block
             last_block = block
 
         # Connect the last block of <blocks> to the fake tail
+        # 将 <blocks> 中的最后一个 block 连接到虚拟尾节点。
         last_block.next_free_block = self.fake_free_list_tail
         self.fake_free_list_tail.prev_free_block = last_block
 
@@ -345,9 +437,11 @@ class FreeKVCacheBlockQueue:
 
     def get_all_free_blocks(self) -> list[KVCacheBlock]:
         """Get all free blocks in the free list. Mainly used for testing.
+        获取 free list 中的所有 free block，主要用于测试。
 
         Returns:
             A list of free blocks.
+            free block 列表。
         """
         ret = []
         if self.fake_free_list_head.next_free_block is None:
@@ -355,9 +449,12 @@ class FreeKVCacheBlockQueue:
                 "next_free_block of fake_free_list_head should always exist"
             )
         # Start from the first block
+        # 从第一个 block 开始。
         curr_block: KVCacheBlock = self.fake_free_list_head.next_free_block
         # As long as next_free_block is available, we haven't reached to
+        # 只要 next_free_block 存在，就说明尚未到达
         # the fake tail yet.
+        # 虚拟尾节点。
         while curr_block.next_free_block is not None:
             ret.append(curr_block)
             curr_block = curr_block.next_free_block
@@ -366,17 +463,23 @@ class FreeKVCacheBlockQueue:
 
 def need_extra_keys(request: Request) -> bool:
     """Check whether the blocks allocated to this request need extra hash keys.
+    检查为该请求分配的 block 是否需要额外的哈希键。
 
     Args:
         request (Request): The request.
+        request (Request)：目标请求。
 
     Returns:
         bool: Whether blocks allocated to this request need extra hash keys.
+        bool：该请求分配的 block 是否需要额外哈希键。
     """
 
     # Multimodal requests need to include the MM hash.
+    # 多模态请求需要包含 MM 哈希。
     # LoRA requests need to include the LoRA name.
+    # LoRA 请求需要包含 LoRA 名称。
     # Request with provided cache salt need to include the salt.
+    # 指定了 cache salt 的请求需要包含该 salt。
     return (
         bool(request.mm_features)
         or (request.lora_request is not None)
@@ -388,18 +491,27 @@ def _gen_mm_extra_hash_keys(
     request: Request, start_token_idx: int, end_token_idx: int, start_mm_idx: int
 ) -> tuple[list[Any], int]:
     """Generate extra keys related to MultiModal request for block hash
+    为计算 block 哈希生成与多模态请求相关的额外键。
     computation. For multi-modal inputs, the extra keys are
+    对于多模态输入，额外键为
     (mm_hash, start_offset) that indicate a mm input contained in the
+    `(mm_hash, start_offset)`，分别表示该 block 包含的多模态输入
     block and its starting offset in the block tokens.
+    及其在 block token 中的起始偏移。
 
     Args:
         request: The request object.
+        request：请求对象。
         start_token_idx: The start token index of the block.
+        start_token_idx：block 的起始 token 索引。
         end_token_idx: The end token index of the block.
+        end_token_idx：block 的结束 token 索引。
         start_mm_idx: The start multi-modal index of the block.
+        start_mm_idx：block 中多模态输入的起始索引。
 
     Returns:
         A tuple of extra keys and the next multi-modal index.
+        额外键和下一个多模态输入索引组成的元组。
     """
     extra_keys: list[Any] = []
 
@@ -408,13 +520,17 @@ def _gen_mm_extra_hash_keys(
         return extra_keys, start_mm_idx
 
     # Note that we assume mm_features are sorted by mm_position.offset.
+    # 注意：假设 mm_features 已按 mm_position.offset 排序。
     # We do not need to check all mm inputs if the start token index is out of
+    # 如果起始 token 索引已超出范围，就无需检查所有多模态输入。
     # range. This usually happens in the late prefill phase and decoding phase.
+    # 这种情况通常出现在预填充后期和解码阶段。
     last_pos = mm_features[-1].mm_position
     if last_pos.offset + last_pos.length < start_token_idx:
         return extra_keys, start_mm_idx
 
     # Support start_mm_idx == -1 to indicate the last mm input.
+    # 支持用 start_mm_idx == -1 表示最后一个多模态输入。
     if start_mm_idx < 0:
         assert -start_mm_idx <= len(mm_features)
         start_mm_idx = len(mm_features) + start_mm_idx
@@ -428,35 +544,46 @@ def _gen_mm_extra_hash_keys(
         if end_token_idx > offset:
             if start_token_idx > offset + length:
                 # This block has passed the current mm input.
+                # 当前 block 已越过这个多模态输入。
                 curr_mm_idx += 1
                 continue
 
             # The block contains the current mm input.
+            # 当前 block 包含这个多模态输入。
             extra_keys.append(mm_feature.identifier)
 
             if end_token_idx >= offset + length:
                 # If this block contains the end of the current mm input,
+                # 如果当前 block 包含这个多模态输入的末尾，
                 # move to the next mm input as this block may also contain
+                # 则继续检查下一个输入，因为当前 block 也可能包含
                 # the next mm input.
+                # 下一个多模态输入。
                 curr_mm_idx += 1
             else:
                 # Otherwise this block is done with mm inputs.
+                # 否则，此 block 已不再包含后续多模态输入。
                 break
         else:
             # This block has not reached the current mm input.
+            # 当前 block 尚未到达这个多模态输入。
             break
     return extra_keys, curr_mm_idx
 
 
 def _gen_lora_extra_hash_keys(request: Request) -> list[str]:
     """Generate extra keys related to LoRA for block hash computation.
+    为计算 block 哈希生成与 LoRA 相关的额外键。
 
     Args:
         request: The request object.
+        request：请求对象。
 
     Returns:
         Return LoRA name of the request if it is a LoRA request. Return empty
+        若请求使用 LoRA，则返回其 LoRA 名称；否则返回
         list otherwise.
+        空列表。
     """
     if not request.lora_request:
         return []
@@ -467,15 +594,21 @@ def _gen_prompt_embeds_extra_hash_keys(
     request: Request, start_token_idx: int, end_token_idx: int
 ) -> list[bytes]:
     """Generate extra keys related to prompt embeds for block hash computation.
+    为计算 block 哈希生成与 prompt embedding 相关的额外键。
 
     Args:
         request: The request object.
+        request：请求对象。
         start_token_idx: The start token index of the block.
+        start_token_idx：block 的起始 token 索引。
         end_token_idx: The end token index of the block.
+        end_token_idx：block 的结束 token 索引。
 
     Returns:
         Return prompt embeddings data of the request if it has prompt embeds.
+        请求包含 prompt embedding 时，返回对应数据；
         Return empty list otherwise.
+        否则返回空列表。
     """
     if request.prompt_embeds is None:
         return []
@@ -488,17 +621,25 @@ def generate_block_hash_extra_keys(
     request: Request, start_token_idx: int, end_token_idx: int, start_mm_idx: int
 ) -> tuple[tuple[Any, ...] | None, int]:
     """Generate extra keys for the block hash. The extra keys can come from
+    为 block 哈希生成额外键。额外键可能来自
     the multi-modal inputs, request specific metadata (e.g., LoRA names), and
+    多模态输入、请求专属元数据（例如 LoRA 名称），以及
     data from prompt embeddings.
+    prompt embedding 数据。
 
     Args:
         request: The request object.
+        request：请求对象。
         start_token_idx: The start token index of the block.
+        start_token_idx：block 的起始 token 索引。
         end_token_idx: The end token index of the block.
+        end_token_idx：block 的结束 token 索引。
         start_mm_idx: The start multi-modal index of the block.
+        start_mm_idx：block 中多模态输入的起始索引。
 
     Returns:
         A tuple of extra keys and the next multi-modal index.
+        额外键和下一个多模态输入索引组成的元组。
     """
     mm_extra_keys: list[Any]
     mm_extra_keys, new_start_mm_idx = _gen_mm_extra_hash_keys(
@@ -529,19 +670,30 @@ def hash_block_tokens(
     extra_keys: tuple[Any, ...] | None = None,
 ) -> BlockHash:
     """Computes a hash value corresponding to the contents of a block and
+    计算与 block 内容及其前序 block 内容相对应的哈希值。
     the contents of the preceding block(s). The hash value is used for
     prefix caching. We use LRU cache for this function to avoid recomputing
     hash values for the same block contents.
+    前序 block 的内容。该哈希值用于前缀缓存。此函数使用 LRU 缓存，避免
+    对相同 block 内容重复计算哈希值。
+
     Args:
         hash_function: The hash function used to compute block hash.
+        hash_function：用于计算 block 哈希的函数。
         parent_block_hash: The hash of the parent block. None
             if this is the first block.
+            如果这是第一个 block，则值为 None。
         curr_block_token_ids: A list of token ids in the current
             block. The current block is assumed to be full.
+        curr_block_token_ids：当前 block 中的 token ID 列表。假设当前 block 已满。
         extra_keys: Extra keys for the block.
+        extra_keys：该 block 的额外键。
+
     Returns:
         The hash value of the block and the token ids in the block.
+        返回 block 哈希值以及该 block 中的 token ID。
         The entire tuple is used as the hash key of the block.
+        整个元组会用作该 block 的哈希键。
     """
     if not parent_block_hash:
         parent_block_hash = NONE_HASH
@@ -558,7 +710,10 @@ def get_request_block_hasher(
 ) -> Callable[[Request], list[BlockHash]]:
     """
     Returns a function which computes the list of un-computed block hashes
-    of a request."""
+    of a request.
+
+    返回一个函数，用于计算请求中尚未计算的 block 哈希列表。
+    """
 
     def request_block_hasher(request: Request) -> list[BlockHash]:
         start_token_idx = len(request.block_hashes) * block_size
@@ -566,14 +721,19 @@ def get_request_block_hasher(
 
         if start_token_idx + block_size > num_tokens:
             # Early stop when there no new full blocks created.
+            # 没有生成新的完整 block 时提前结束。
             return []
 
         curr_mm_idx = 0
         if start_token_idx > 0:
             # Set curr_mm_idx = -1 to indicate the last mm input.
+            # 将 curr_mm_idx 设为 -1，表示从最后一个多模态输入开始。
             # Note that since we reach to this branch only when the block is
+            # 注意：只有在 block 由生成 token 填满时才会进入此分支，
             # completed with generated tokens, we only need to consider the
+            # 因此只需考虑
             # last mm input.
+            # 最后一个多模态输入。
             curr_mm_idx = -1
 
         prev_block_hash_value = (
@@ -584,14 +744,17 @@ def get_request_block_hasher(
             end_token_idx = start_token_idx + block_size
             if end_token_idx > num_tokens:
                 # We only hash full blocks
+                # 只对完整 block 计算哈希。
                 break
 
             # MM and LoRA requests need extra keys for block-hash computation.
+            # 多模态和 LoRA 请求计算 block 哈希时需要额外键。
             extra_keys, curr_mm_idx = generate_block_hash_extra_keys(
                 request, start_token_idx, end_token_idx, curr_mm_idx
             )
 
             # Compute the hash of the current block
+            # 计算当前 block 的哈希。
             block_tokens = request.all_token_ids[start_token_idx:end_token_idx]
             block_hash = hash_block_tokens(
                 caching_hash_fn, prev_block_hash_value, block_tokens, extra_keys
@@ -648,6 +811,7 @@ def max_memory_usage_bytes(
 ) -> int:
     """
     Get the maximum memory usage in bytes for the given KV cache specs.
+    获取给定 KV cache 规格的最大显存用量（字节）。
     """
     return sum(spec.max_memory_usage_bytes(vllm_config) for spec in kv_cache_specs)
 
@@ -659,39 +823,53 @@ def estimate_max_model_len(
 ) -> int:
     """
     Estimates the maximum model length that can fit in the available memory
+    使用二分查找估算可在可用显存中容纳的最大模型长度。
     using binary search.
 
     This function temporarily modifies max_model_len during estimation but
+    估算期间会临时修改 max_model_len，
     restores the original value before returning, ensuring no side effects.
+    但返回前会恢复原值，确保不产生副作用。
 
     Args:
         vllm_config: The global VllmConfig
+        vllm_config：全局 VllmConfig。
         kv_cache_spec: The kv cache spec of each attention layer in the model
+        kv_cache_spec：模型中各 attention layer 的 KV cache 规格。
         available_memory: Memory available for KV cache in bytes.
+        available_memory：可用于 KV cache 的显存，单位为字节。
 
     Returns:
         The estimated maximum model length that can fit in the available memory.
+        估算得到的、可由可用显存容纳的最大模型长度。
     """
     # Save the original max_model_len to restore after estimation
+    # 保存原始 max_model_len，以便估算后恢复。
     original_max_model_len = vllm_config.model_config.max_model_len
 
     # Define a function to check if a given model length fits in memory
+    # 定义一个函数，检查指定模型长度是否能放入显存。
     def fits_in_memory(model_len: int) -> bool:
         # Temporarily modify the max_model_len for this calculation
+        # 为此次计算临时修改 max_model_len。
         vllm_config.model_config.max_model_len = model_len
         # Calculate memory needed for the given model length
+        # 计算指定模型长度所需的显存。
         memory_needed = max_memory_usage_bytes(vllm_config, kv_cache_spec.values())
         return memory_needed <= available_memory
 
     try:
         # Binary search for the maximum model length
+        # 二分查找最大模型长度。
         left, right = 1, original_max_model_len
 
         # If even the smallest model length doesn't fit, return 0
+        # 即使最小模型长度也无法容纳时，返回 0。
         if not fits_in_memory(left):
             return 0
 
         # Binary search for the maximum model length that fits
+        # 二分查找可容纳的最大模型长度。
         result = 1
         while left <= right:
             mid = (left + right) // 2
@@ -703,6 +881,7 @@ def estimate_max_model_len(
         return result
     finally:
         # Always restore the original max_model_len to avoid side effects
+        # 始终恢复原始 max_model_len，避免产生副作用。
         vllm_config.model_config.max_model_len = original_max_model_len
 
 
@@ -713,18 +892,25 @@ def check_enough_kv_cache_memory(
 ):
     """
     Checks whether `available_memory` is enough for the KV cache to hold at
+    检查 `available_memory` 是否足以让 KV cache 容纳至少一个
     least one request with the model's max_model_len.
+    使用模型最大长度的请求。
 
     Args:
         vllm_config: The global VllmConfig
+        vllm_config：全局 VllmConfig。
         kv_cache_spec: The kv cache spec of each attention layer in the model
+        kv_cache_spec：模型中各 attention layer 的 KV cache 规格。
         available_memory: Memory available for KV cache in bytes.
+        available_memory：可用于 KV cache 的显存，单位为字节。
 
     Raises:
         ValueError: If there is not enough memory available for the KV cache.
+        ValueError：KV cache 可用显存不足时抛出。
     """
 
     # No need to check for available memory if the kv_cache_spec is empty
+    # kv_cache_spec 为空时，无需检查可用显存。
     if kv_cache_spec:
         _check_enough_kv_cache_memory(
             available_memory,
@@ -739,18 +925,26 @@ def create_kv_cache_group_specs(
 ) -> list[KVCacheGroupSpec]:
     """
     Create KVCacheGroupSpec object for each kv cache group layer.
+    为每个 KV cache group 创建一个 KVCacheGroupSpec 对象。
     The layers in the same group should share the same
+    同一组中的 layer 应共享相同的
     KVCacheSpec.
+    KVCacheSpec。
 
     Args:
         kv_cache_spec:
             A mapping from each layer name to its corresponding KVCacheSpec.
+            从 layer 名称到对应 KVCacheSpec 的映射。
         grouped_layer_names:
             A list of kv cache groups, where each element is a list of layer
+            KV cache group 列表；每个元素是一个 layer 名称列表，
             names that belong to the same group and should share the same
+            表示属于同一组且应共享相同
             KVCacheSpec.
+            KVCacheSpec 的 layer。
     Returns:
         A list of KVCacheGroupSpec objects, one for each group.
+        每个 group 对应一个 KVCacheGroupSpec 对象的列表。
     """
     kv_cache_groups = []
     for layer_names_one_group in grouped_layer_names:
@@ -767,19 +961,26 @@ def create_kv_cache_group_specs(
 def is_kv_cache_spec_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
     """
     Whether all layers in the given KVCacheSpec have the same KV cache spec.
+    判断给定 KVCacheSpec 中的所有 layer 是否具有相同的 KV cache 规格。
     Note that we regard FullAttentionSpec with and without sliding window as
+    注意：带滑动窗口和不带滑动窗口的 FullAttentionSpec
     the same type.
+    被视为同一种类型。
 
     Args:
         kv_cache_spec: The kv cache spec of each attention layer in the model
+        kv_cache_spec：模型中各 attention layer 的 KV cache 规格。
 
     Returns:
         True if all layers have the same type, False otherwise.
+        所有 layer 类型相同则返回 True，否则返回 False。
     """
 
     if not kv_cache_spec:
         # Encoder-only models do not have KV cache, kv_cache_type can be
+        # Encoder-only 模型没有 KV cache，因此 kv_cache_type
         # regarded as uniform.
+        # 可视为统一类型。
         return True
     try:
         kv_cache_spec_values = list(kv_cache_spec.values())
@@ -794,6 +995,7 @@ def get_max_concurrency_for_kv_cache_config(
 ) -> float:
     """
     Get the maximum concurrency for the given KV cache configuration.
+    获取给定 KV cache 配置所能支持的最大并发数。
     """
     num_layer_per_group = max(
         len(group.layer_names) for group in kv_cache_config.kv_cache_groups
@@ -813,6 +1015,7 @@ def get_max_concurrency_for_kv_cache_config(
 def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
     """
     Override the number of kv cache blocks if `num_gpu_blocks_override` is set.
+    设置了 `num_gpu_blocks_override` 时，覆盖 KV cache block 数量。
     """
     if vllm_config.cache_config.num_gpu_blocks_override is not None:
         num_gpu_blocks_override = vllm_config.cache_config.num_gpu_blocks_override
@@ -831,12 +1034,17 @@ def get_num_blocks(
 ) -> int:
     """
     Get the number of kv cache blocks.
+    获取 KV cache block 数量。
 
     Args:
         vllm_config: The global VllmConfig
+        vllm_config：全局 VllmConfig。
         num_layers: The number of layers
+        num_layers：layer 数量。
         available_memory: Memory available for KV cache in bytes.
+        available_memory：可用于 KV cache 的显存，单位为字节。
         page_size: The page size of the KV cache.
+        page_size：KV cache page 大小。
     """
     num_blocks = int(available_memory // page_size // num_layers)
     num_blocks = max(num_blocks, 0)

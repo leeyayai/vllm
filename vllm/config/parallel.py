@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+# odelConfig 决定了模型“怎么算”，CacheConfig 决定了“怎么存”，那么 
+# ParallelConfig 就决定了“怎么分”——即如何将庞大的模型和并发请求切分到多个 GPU 甚至多台服务器上。
+
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -10,6 +13,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic.dataclasses import dataclass
 from torch.distributed import ProcessGroup, ReduceOp
 from typing_extensions import Self
+# Self: 用于类型提示，允许方法返回当前类的实例（常见于链式调用或配置构建器模式）
 
 import vllm.envs as envs
 from vllm.config.utils import config
@@ -18,10 +22,13 @@ from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
 )
 from vllm.platforms import current_platform
+# vLLM 的跨平台抽象层。用于判断当前是 NVIDIA、AMD、Intel 还是其他硬件，从而选择不同的通信后端。
 from vllm.utils.network_utils import get_open_ports_list
+# 分布式通信需要网络端口。这个工具用于自动寻找空闲端口，避免多实例启动时的端口冲突。
 from vllm.utils.torch_utils import cuda_device_count_stateless
+# 无状态地获取 GPU 数量，避免在配置阶段就意外初始化 CUDA 上下文（这会导致后续多进程 fork 时崩溃）。
 
-if TYPE_CHECKING:
+if TYPE_CHECKING: # Lazy Loading) 与 Ray 依赖
     from ray.runtime_env import RuntimeEnv
     from ray.util.placement_group import PlacementGroup
 
@@ -33,23 +40,35 @@ else:
 
 logger = init_logger(__name__)
 
-ExpertPlacementStrategy = Literal["linear", "round_robin"]
-DistributedExecutorBackend = Literal["ray", "mp", "uni", "external_launcher"]
-DataParallelBackend = Literal["ray", "mp"]
-EPLBPolicyOption = Literal["default"]
-All2AllBackend = Literal[
-    "naive",
-    "pplx",
-    "deepep_high_throughput",
-    "deepep_low_latency",
-    "allgather_reducescatter",
-    "flashinfer_all2allv",
+ExpertPlacementStrategy = Literal["linear", "round_robin"] # 定义 MoE（混合专家模型） 中专家的放置策略。
+# linear: 将连续的专家放在同一张卡上。
+# round_robin: 轮询分配，让每张卡上的专家种类更均匀，有助于负载均衡。
+DistributedExecutorBackend = Literal["ray", "mp", "uni", "external_launcher"] # 定义多卡/多机通信的执行器后端。
+# ray: 使用 Ray 框架进行分布式调度（适合大规模集群）
+# mp: 使用 Python 原生 multiprocessing（适合单机多卡）。
+# uni: 单进程模式（所有逻辑在一个进程内，适合单卡或调试）。
+# external_launcher: 外部启动器（如 Slurm、TorchRun），vLLM 只负责接管已启动的进程组。
+DataParallelBackend = Literal["ray", "mp"] # 定义数据并行的通信后端。
+# ray: 使用 Ray 框架进行数据并行（适合大规模集群）
+# mp: 使用 Python 原生 multiprocessing（适合单机多卡）。
+EPLBPolicyOption = Literal["default"] # 定义专家并行负载均衡的策略。
+# default: 使用默认的负载均衡策略。
+All2AllBackend = Literal[  # 定义 MoE 模型中 All-to-All 通信 的底层实现。这是 MoE 推理的性能瓶颈所在。
+    "naive", # 原始实现，不支持并行。
+    "pplx", # PPLX 实现，支持并行。
+    "deepep_high_throughput", # DeepEP 高吞吐量实现。
+    "deepep_low_latency", # DeepEP 低延迟实现。
+    "allgather_reducescatter", # All-gather + Reduce-Scatter 实现。
+    "flashinfer_all2allv", # FlashInfer All-to-All 实现。
 ]
 
 
 @config
 @dataclass
-class EPLBConfig:
+class EPLBConfig: # MoE（混合专家模型） 的专家并行负载均衡配置。
+    #  MoE 模型在推理时，不同的 Token 会被路由到不同的专家，容易导致某些 GPU 上的专家过载。
+    # EPLBConfig 允许 vLLM 动态监控负载（window_size），并在一定步数后（step_interval）重新排列专家，
+    # 甚至引入冗余专家（num_redundant_experts）来缓解热点。
     """Configuration for Expert Parallel Load Balancing (EP)."""
 
     window_size: int = 1000
@@ -97,27 +116,30 @@ class ParallelConfig:
     """Configuration for the distributed execution."""
 
     pipeline_parallel_size: int = 1
-    """Number of pipeline parallel groups."""
+    """Number of pipeline parallel groups.""" # 将模型按层切分到多卡。
     tensor_parallel_size: int = 1
-    """Number of tensor parallel groups."""
+    """Number of tensor parallel groups.""" # 将模型按张量切分到多卡。
     prefill_context_parallel_size: int = 1
-    """Number of prefill context parallel groups."""
+    """Number of prefill context parallel groups.""" # CP上下文并行，分为 Prefill 和 Decode 两种：将预填充上下文切分到多卡。
+    # 当上下文极长时，将序列切分到多卡上并行计算，解决单卡显存无法容纳超长 KV Cache 的问题。
     data_parallel_size: int = 1
     """Number of data parallel groups. MoE layers will be sharded according to
     the product of the tensor parallel size and data parallel size."""
+    # MoE 专属逻辑：对于混合专家模型（MoE），DP 不仅仅用于增加吞吐，还用于切分专家（Expert Parallelism）。代码注释明确指出：MoE 层的专家会根据 tensor_parallel_size * data_parallel_size 的乘积来进行分片。
+    # 这意味着在 MoE 场景下，增加 DP 既能提升并发能力，又能降低单卡显存压力。
     data_parallel_size_local: int = 1
     """Number of local data parallel groups."""
     data_parallel_rank: int = 0
     """Rank of the data parallel group."""
     data_parallel_rank_local: int | None = None
     """Local rank of the data parallel group,
-    set only in SPMD mode."""
+    set only in SPMD mode.""" # 本地与全局 Rank 管理
     data_parallel_master_ip: str = "127.0.0.1"
     """IP of the data parallel master."""
     data_parallel_rpc_port: int = 29550
     """Port for data parallel messaging."""
     data_parallel_master_port: int = 29500
-    """Port of the data parallel master."""
+    """Port of the data parallel master.""" #配置数据并行节点间的通信地址和端口。
     data_parallel_backend: DataParallelBackend = "mp"
     """Backend to use for data parallel, either "mp" or "ray"."""
     data_parallel_external_lb: bool = False
@@ -125,16 +147,21 @@ class ParallelConfig:
     and when data_parallel_size > 0. This is useful for a "one-pod-per-rank"
     wide-EP setup in Kubernetes. Set implicitly when --data-parallel-rank
     is provided explicitly to vllm serve."""
+    # External LB（外部负载均衡）：适用于“一个 Pod 对应一个 Rank”的宽泛 EP（Expert Parallel）部署。
+    # 此时 vLLM 内部不做请求分发，完全依赖外部的 Nginx/HAProxy 或 K8s Service 将请求路由到不同的 vLLM 实例。
     data_parallel_hybrid_lb: bool = False
     """Whether to use "hybrid" DP LB mode. Applies only to online serving
     and when data_parallel_size > 0. Enables running an AsyncLLM
     and API server on a "per-node" basis where vLLM load balances
     between local data parallel ranks, but an external LB balances
     between vLLM nodes/replicas. Set explicitly in conjunction with
-    --data-parallel-start-rank."""
+    --data-parallel-start-rank.""" 
+    # Hybrid LB（混合负载均衡）：结合了内部和外部负载均衡。在一个物理节点上运行一个 vLLM 实例（包含多个本地 DP Rank），vLLM 内部负责在本地 Rank 之间分发请求；
+    # 而外部 LB 负责在多个物理节点（vLLM 实例）之间分发请求。这种模式可以最大化利用单机内的 NVLink 带宽，同时兼顾集群级的扩展性。
+    # 高级负载均衡模式（云原生/K8s 场景）
     is_moe_model: bool | None = None
     """Whether the deployed model is MoE (if known)."""
-    enable_expert_parallel: bool = False
+    enable_expert_parallel: bool = False #  MoE 专家放置与通信
     """Use expert parallelism instead of tensor parallelism for MoE layers."""
     enable_eplb: bool = False
     """Enable expert parallelism load balancing for MoE layers."""
@@ -149,6 +176,8 @@ class ParallelConfig:
       with 4 experts and 2 ranks, rank 0 will have experts [0, 2] and rank 1
       will have experts [1, 3]. This strategy can help improve load balancing
       for grouped expert models with no redundant experts."""
+    #  MoE 专家并行通信后端
+    # linear 是连续放置，round_robin 是轮询放置（有助于负载均衡）。
     all2all_backend: All2AllBackend = "allgather_reducescatter"
     """All2All backend for MoE expert parallel communication. Available options:
 
@@ -158,11 +187,14 @@ class ParallelConfig:
     - "deepep_high_throughput": Use deepep high-throughput kernels\n
     - "deepep_low_latency": Use deepep low-latency kernels\n
     - "flashinfer_all2allv": Use flashinfer alltoallv kernels for mnnvl"""
+    # MoE 推理中最耗时的环节。vLLM 提供了多种后端（如 deepep_low_latency, flashinfer_all2allv），
+    # 让用户根据集群网络拓扑（NVLink vs RDMA）选择最优解。
 
     max_parallel_loading_workers: int | None = None
     """Maximum number of parallel loading workers when loading model
     sequentially in multiple batches. To avoid RAM OOM when using tensor
     parallel and large models."""
+    # 在多个批次中依次加载模型时，并行加载工人的最大数量。当使用张量并行和大型模型时，避免RAM OOM
 
     disable_custom_all_reduce: bool = False
     """Disable the custom all-reduce kernel and fall back to NCCL."""
@@ -177,11 +209,15 @@ class ParallelConfig:
     If the number of tokens in the request is greater than this threshold,
     microbatching will be used. Otherwise, the request will be processed in a
     single batch."""
+    # 双批次重叠执行。这是一种极致的延迟隐藏技术，通过将计算和通信（或不同阶段的计算）重叠，进一步榨干 GPU 性能。
+    # 阈值参数用于控制何时触发微批次（Micro-batching）。
+    # 仅包含解码的批的双批重叠阈值。如果请求中的令牌数量大于此阈值，则将使用微批处理。否则，请求将被单独处理
     dbo_prefill_token_threshold: int = 512  # TODO(lucas): tune
     """The threshold for dual batch overlap for batches that contain one or more
     prefills. If the number of tokens in the request is greater than this
     threshold, microbatching will be used. Otherwise, the request will be
     processed in a single batch."""
+    # 包含一个或多个前置文件的批的双批重叠阈值。如果请求中的令牌数量大于此阈值，则将使用微批处理。否则，请求将在单个批处理中处理。
 
     disable_nccl_for_dp_synchronization: bool = Field(default=None)
     """Forces the dp synchronization logic in vllm/v1/worker/dp_utils.py 
@@ -303,21 +339,21 @@ class ParallelConfig:
         return None if value is None else handler(value)
 
     @model_validator(mode="after")
-    def _validate_parallel_config(self) -> Self:
-        if self._api_process_rank >= self._api_process_count:
+    def _validate_parallel_config(self) -> Self: # 配置合法性校验 (Validation)
+        if self._api_process_rank >= self._api_process_count: # API 进程 Rank 校验
             raise ValueError(
                 "Invalid value of `_api_process_rank`. "
                 f"Expected to be `-1` or `[0, {self._api_process_count})`, "
                 f"but found: {self._api_process_rank}"
             )
 
-        if self.data_parallel_size_local > self.data_parallel_size:
+        if self.data_parallel_size_local > self.data_parallel_size: #  2. 本地 DP 组大小不能大于全局 DP 大小
             raise ValueError(
                 f"data_parallel_size_local ({self.data_parallel_size_local}) "
                 f"must be <= data_parallel_size ({self.data_parallel_size})"
             )
 
-        if self.data_parallel_size <= 1 and self.data_parallel_external_lb:
+        if self.data_parallel_size <= 1 and self.data_parallel_external_lb: # 3. 外部负载均衡模式只能在 DP 大于 1 时使用
             raise ValueError(
                 "data_parallel_external_lb can only be set when data_parallel_size > 1"
             )
@@ -361,6 +397,7 @@ class ParallelConfig:
     def num_ubatches(self) -> int:
         return 2 if self.enable_dbo else self.ubatch_size
 
+    # 高并发启动多个 vLLM 实例时，多个进程可能会同时探测到同一个空闲端口，导致 EADDRINUSE（端口被占用）错误。
     def get_next_dp_init_port(self) -> int:
         """
         We might need to initialize process groups in multiple
@@ -370,6 +407,7 @@ class ParallelConfig:
         pop a new port from the prepared port list each time we need to
         initialize a new process group related to data parallelism.
         """
+        # get_next_dp_init_port 维护了一个端口列表，每次初始化新的进程组（Process Group）时弹出一个新端口，避免内部冲突。
         if self._data_parallel_master_port_list:
             answer = self._data_parallel_master_port_list.pop()
         else:
@@ -386,6 +424,7 @@ class ParallelConfig:
         # with `torch.distributed.DistNetworkError: EADDRINUSE`.
         # To make the initialization more robust we retry a few times
         # with a fresh port whenever this specific error is observed.
+        # stateless_init_dp_group 在捕获到端口占用异常时，会自动递增端口号并重试最多 5 次，极大提升了生产环境下的启动稳定性。
         from torch.distributed import DistNetworkError
 
         from vllm.distributed.utils import (
@@ -478,7 +517,7 @@ class ParallelConfig:
         torch.distributed.all_reduce(tensor, op=ReduceOp.MIN, group=dp_group)
         return tensor.item()
 
-    def compute_hash(self):
+    def compute_hash(self): # 计算哈希
         """
         Provide a hash that uniquely identifies all the configs
         that affect the structure of the computation
@@ -525,7 +564,9 @@ class ParallelConfig:
         factors = get_hash_factors(self, ignored_factors)
         return hash_factors(factors)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None: 
+        # 负责处理环境变量兼容、计算全局拓扑（World Size）、解析数据并行（DP）参数，
+        # 并智能决策底层应该使用哪种分布式执行器（Ray、Multiprocessing 还是单进程）
         # Set all2all_backend from env var if not specified, with deprecation warning
         if envs.is_set("VLLM_ALL2ALL_BACKEND"):
             logger.warning_once(

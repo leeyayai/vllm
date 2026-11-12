@@ -59,7 +59,7 @@ _R = TypeVar("_R")  # Return type for collective_rpc
 EngineIdentity = bytes
 
 
-class EngineCoreClient(ABC):
+class EngineCoreClient(ABC):  # 抽象类
     """
     EngineCoreClient: subclasses handle different methods for pushing
         and pulling from the EngineCore for asyncio / multiprocessing.
@@ -69,6 +69,67 @@ class EngineCoreClient(ABC):
     * SyncMPClient: ZMQ + background proc EngineCore (for LLM)
     * AsyncMPClient: ZMQ + background proc EngineCore w/ asyncio (for AsyncLLM)
     """
+
+                    #  请求方向
+                    #             AsyncLLM
+                    #             |
+                    #             v
+                    #             AsyncMPClient.add_request_async()
+                    #             |
+                    #             | ZMQ
+                    #             v
+                    #             EngineCoreProc
+                    #             |
+                    #             v
+                    #             EngineCore
+                    #             |
+                    #             v
+                    #             Scheduler
+                    #             |
+                    #             v
+                    #             ModelRunner / GPU
+                    #             |
+                    #             | 执行结果
+                    #             v
+                    #             EngineCoreOutputs
+                    #             |
+                    #             | ZMQ
+                    #             v
+                    #             AsyncMPClient  -- 这个位置抽象类
+                    #             |
+                    #             v
+                    #             get_output_async()
+                    #             |
+                    #             v
+                    #             AsyncLLM._run_output_handler()
+                    #             |
+                    #             v
+                    #             OutputProcessor.process_outputs()
+                    #             |
+                    #             v
+                    #             RequestOutputCollector
+                    #             |
+                    #             v
+                    #             AsyncLLM.generate() / encode()
+                    #             |
+                    #             v
+                    #             yield 给 API Server
+
+                    # Driver Process（API 服务所在进程）
+                    # - AsyncLLM
+                    # - InputProcessor
+                    # - OutputProcessor
+                    # - AsyncMPClient
+                    # - RequestOutputCollector
+                    #             |  ZMQ 通信
+                    #             | 发送 EngineCoreRequest，接收 EngineCoreOutputs
+                    #             v  
+                    # EngineCore Process（独立进程）
+                    # - EngineCoreProc
+                    # - EngineCore
+                    # - Scheduler
+                    # - Executor / ModelRunner
+                    # - GPU 模型执行                  
 
     @staticmethod
     def make_client(

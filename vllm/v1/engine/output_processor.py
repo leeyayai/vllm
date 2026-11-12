@@ -35,6 +35,8 @@ from vllm.v1.metrics.stats import (
 # shared empty CPU tensor used as a placeholder pooling output
 EMPTY_CPU_TENSOR = torch.empty(0, device="cpu")
 
+# 将底层 EngineCore 返回的原始计算结果（EngineCoreOutputs，通常是 token IDs 和 logprobs）转换为用户友好的 RequestOutput 对象，
+# 并通过异步机制（asyncio）安全地交付给上层的 API 服务。
 
 class RequestOutputCollector:
     """

@@ -50,7 +50,7 @@ class InputProcessor:
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
     ) -> None:
         self.vllm_config = vllm_config
-        self.model_config = vllm_config.model_config
+        self.model_config = vllm_config.model_config  # 内部初始化有校验，后面又做了校验
         self.cache_config = vllm_config.cache_config
         self.lora_config = vllm_config.lora_config
         self.structured_outputs_config = vllm_config.structured_outputs_config

@@ -36,7 +36,7 @@ logger = init_logger(__name__)
 __all__ = ["Range"]
 
 
-class CompilationMode(enum.IntEnum):
+class CompilationMode(enum.IntEnum):  #  CompilationMode（编译模式）枚举
     """The compilation approach used for torch.compile-based compilation of the
     model."""
 
@@ -52,11 +52,17 @@ class CompilationMode(enum.IntEnum):
     shape specialization, and custom passes."""
 
 
-class CUDAGraphMode(enum.Enum):
+class CUDAGraphMode(enum.Enum):  #  CUDAGraphMode（CUDA 图模式）枚举
+    # 定义和控制在 vLLM 推理过程中 CUDA Graph（计算图捕获） 的运行模式
     """Constants for the cudagraph mode in CompilationConfig.
     Meanwhile, the subset enum `NONE`, `PIECEWISE` and `FULL` are also
     treated as concrete runtime mode for cudagraph runtime dispatching.
     """
+
+# NONE = 0: 禁用 CUDA Graph。所有计算都通过传统的动态图模式执行。
+# PIECEWISE = 1: 分段捕获（Piecewise Capture）。将模型计算图切分成多个小块（通常是按层或按算子）分别捕获。这种方式兼容性更好，但优化程度不如全图捕获。
+# FULL = 2: 全图捕获（Full Capture）。将整个前向传播过程作为一个完整的计算图捕获。
+# 这种方式能最大程度减少 CPU 到 GPU 的交互开销，性能最优，但对模型结构的兼容性要求较高。
 
     NONE = 0
     PIECEWISE = 1
@@ -112,22 +118,25 @@ class PassConfig:
     If used outside of the VLLMConfig, some fields may be left in an
     improper state.
     """
+    #。它专门用于控制 vLLM 底层基于 PyTorch Inductor 的自定义编译优化 Pass（优化通道）。
+    # 将这些 Pass 的配置从通用的 CompilationConfig 中独立出来，是为了避免循环依赖（因为 PassManager 本身是配置的一个属性），
+    # 同时确保编译优化逻辑的模块化和安全性。
 
     # New flags
     fuse_norm_quant: bool = Field(default=None)
-    """Fuse the custom RMSNorm + quant ops."""
+    """Fuse the custom RMSNorm + quant ops.""" # · 是否启用自定义的 RMSNorm + 量化操作
     fuse_act_quant: bool = Field(default=None)
-    """Fuse the custom SiluMul + quant ops."""
+    """Fuse the custom SiluMul + quant ops.""" # · 是否启用自定义的 SiluMul + 量化操作
     fuse_attn_quant: bool = Field(default=None)
-    """Fuse the custom attention + quant ops."""
+    """Fuse the custom attention + quant ops.""" # · 是否启用自定义的注意力 + 量化操作
     eliminate_noops: bool = Field(default=None)
-    """Eliminate no-op ops."""
+    """Eliminate no-op ops.""" # · 是否启用消除无操作（No-Op）的优化
     enable_sp: bool = Field(default=None)
-    """Enable sequence parallelism."""
+    """Enable sequence parallelism.""" # · 是否启用序列并行化
     fuse_gemm_comms: bool = Field(default=None)
-    """Enable async TP."""
+    """Enable async TP.""" # · 是否启用异步 TP 操作
     fuse_allreduce_rms: bool = Field(default=None)
-    """Enable flashinfer allreduce fusion."""
+    """Enable flashinfer allreduce fusion.""" # · 是否启用 flashinfer 合并所有reduce 操作的优化
 
     fi_allreduce_fusion_max_size_mb: float | None = None
     """The threshold of the communicated tensor sizes under which
@@ -147,6 +156,9 @@ class PassConfig:
                 8: 1,  # 1MB
             },
         }, where key is the device capability"""
+    # 当使用 FlashInfer 融合 AllReduce 时，允许通信的张量大小阈值（单位：MB）。
+    # 动态默认值：如果未指定，系统会根据当前 GPU 的算力（Compute Capability）和 world_size（并行卡数）自动选择最佳阈值。
+    # 例如，对于算力为 90 的 GPU，2卡并行时阈值为 64MB，4卡为 2MB，8卡为 1MB。
     enable_qk_norm_rope_fusion: bool = False
     """Enable fused Q/K RMSNorm + RoPE pass."""
 
@@ -251,6 +263,8 @@ class DynamicShapesType(str, enum.Enum):
     BACKED_SIZE_OBLIVIOUS = "backed_size_oblivious"
     """Experimental flag that treats backed symbols as unbacked when explicit
     unbacked handling is defined."""
+    #输入序列的长度（如 Prompt 长度、Batch Size）是不断变化的。PyTorch 的 torch.compile 默认会对这些动态形状进行“守卫（Guards）”检查，
+    # 如果形状发生变化，可能会触发重新编译（Recompilation），从而导致严重的性能抖动。这段代码正是为了解决这一痛点，提供了精细的控制和调试手段。
 
 
 @config
@@ -304,29 +318,31 @@ class CompilationConfig:
     You must pass CompilationConfig to VLLMConfig constructor.
     VLLMConfig's post_init does further initialization. If used outside of the
     VLLMConfig, some fields will be left in an improper state.
+    # 负责控制 torch.compile 编译流水线以及 CUDA Graph（计算图捕获） 的行为
 
     It has three parts:
+    # 负责控制 torch.compile 编译流水线以及 CUDA Graph（计算图捕获） 的行为
 
     - Top-level Compilation control:
-        - [`mode`][vllm.config.CompilationConfig.mode]
-        - [`debug_dump_path`][vllm.config.CompilationConfig.debug_dump_path]
-        - [`cache_dir`][vllm.config.CompilationConfig.cache_dir]
-        - [`backend`][vllm.config.CompilationConfig.backend]
-        - [`custom_ops`][vllm.config.CompilationConfig.custom_ops]
-        - [`splitting_ops`][vllm.config.CompilationConfig.splitting_ops]
-        - [`compile_mm_encoder`][vllm.config.CompilationConfig.compile_mm_encoder]
+        - [`mode`][vllm.config.CompilationConfig.mode] # 编译模式
+        - [`debug_dump_path`][vllm.config.CompilationConfig.debug_dump_path] # 调试 dump 路径
+        - [`cache_dir`][vllm.config.CompilationConfig.cache_dir] # 缓存目录
+        - [`backend`][vllm.config.CompilationConfig.backend] # 后端
+        - [`custom_ops`][vllm.config.CompilationConfig.custom_ops] # 自定义操作
+        - [`splitting_ops`][vllm.config.CompilationConfig.splitting_ops] # 分块操作
+        - [`compile_mm_encoder`][vllm.config.CompilationConfig.compile_mm_encoder] # 是否编译 MM 编码器
     - CudaGraph capture:
-        - [`cudagraph_mode`][vllm.config.CompilationConfig.cudagraph_mode]
-        - [`cudagraph_capture_sizes`]
-        [vllm.config.CompilationConfig.cudagraph_capture_sizes]
-        - [`max_cudagraph_capture_size`]
-        [vllm.config.CompilationConfig.max_cudagraph_capture_size]
-        - [`cudagraph_num_of_warmups`]
-        [vllm.config.CompilationConfig.cudagraph_num_of_warmups]
-        - [`cudagraph_copy_inputs`]
-        [vllm.config.CompilationConfig.cudagraph_copy_inputs]
-    - Inductor compilation:
-        - [`compile_sizes`][vllm.config.CompilationConfig.compile_sizes]
+        - [`cudagraph_mode`][vllm.config.CompilationConfig.cudagraph_mode] # CUDA Graph 模式
+        - [`cudagraph_capture_sizes`] # CUDA Graph 捕获的大小
+        [vllm.config.CompilationConfig.cudagraph_capture_sizes] # CUDA Graph 捕获的大小
+        - [`max_cudagraph_capture_size`] # 最大 CUDA Graph 捕获大小
+        [vllm.config.CompilationConfig.max_cudagraph_capture_size] # 最大 CUDA Graph 捕获大小
+        - [`cudagraph_num_of_warmups`] # CUDA Graph 预热次数
+        [vllm.config.CompilationConfig.cudagraph_num_of_warmups] # CUDA Graph 预热次数
+        - [`cudagraph_copy_inputs`] # 是否复制输入
+        [vllm.config.CompilationConfig.cudagraph_copy_inputs] # 是否复制输入
+    - Inductor compilation: # Inductor 编译
+        - [`compile_sizes`][vllm.config.CompilationConfig.compile_sizes] # 编译的大小
         - [`compile_ranges_split_points`]
             [vllm.config.CompilationConfig.compile_ranges_split_points]
         - [`inductor_compile_config`]
@@ -334,15 +350,26 @@ class CompilationConfig:
         - [`inductor_passes`][vllm.config.CompilationConfig.inductor_passes]
         - custom inductor passes
 
-    Why we have different sizes for cudagraph and inductor:
+    Why we have different sizes for cudagraph and inductor: # 为什么需要不同的大小
+    # 因为 CUDA Graph 捕获和 Inductor 编译的这两种底层优化技术处理动态形状（Dynamic Shapes）的机制存在本质差异
+    # 这CUDA Graph 是“物理录制”，必须严格匹配尺寸；而 Inductor 是“逻辑编译”，支持通用形状。
     - cudagraph: a cudagraph captured for a specific size can only be used
         for the same size. We need to capture all the sizes we want to use.
+        # 为什么大小必须不同：在录制（Capture）时，图中所有操作的输入输出显存地址和形状（Shape）都被原封不动地“写死”了。
+        # 这意味着，一张为 batch_size=8 录制的图，绝对不能用于 batch_size=9 的请求。
+        # 为了支持不同规模的并发请求，vLLM 必须提前为一系列特定的 Batch Size（如 [1, 2, 4, 8, 16...]）分别录制不同的 CUDA Graph。运行时，
+        # 如果实际请求的 Batch Size 是 5，vLLM 会将其向上填充（Padding）到最近的捕获尺寸（即 8），然后重放对应的图。 
     - inductor: a graph compiled by inductor for a general shape can be used
         for different sizes. Inductor can also compile for specific sizes,
         where it can have more information to optimize the graph with fully
         static shapes. However, we find the general shape compilation is
         sufficient for most cases. It might be beneficial to compile for
         certain small batchsizes, where inductor is good at optimizing.
+        #Inductor 是 PyTorch 的编译器后端，它通过图优化和代码生成（如生成 Triton 内核）来加速计算。
+        # 编译生成优化的底层 Kernel（Compile 级别）
+        # 支持动态（通用形状编译，兼容多种尺寸）
+        # 仅需一次通用编译即可覆盖所有尺寸
+        # 配置目的:决定哪些特定尺寸需要触发“特化编译（Autotune）
     """
 
     # Top-level Compilation control

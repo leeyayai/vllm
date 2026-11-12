@@ -19,7 +19,9 @@ else:
 
 logger = init_logger(__name__)
 
-
+# 负责控制大模型权重文件是如何被读取、解析并加载到计算设备（如 GPU）上的。
+# 不仅兼容了从本地 GGUF、Safetensors 到云端 Tensorizer 等多种加载方式，还针对网络存储等极端环境提供了 eager 等优化策略，
+# 确保模型能够以最高效、最稳定的方式加载到显存中。
 @config
 @dataclass
 class LoadConfig:

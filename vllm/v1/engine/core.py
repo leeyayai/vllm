@@ -76,6 +76,37 @@ HANDSHAKE_TIMEOUT_MINS = 5
 _R = TypeVar("_R")  # Return type for collective_rpc
 
 
+
+# ┌──────────────────────────────────────────────────────────────┐
+# │                         单台机器                              │
+# │                                                              │
+# │  ┌─────────────────┐  ZMQ (inproc 或 TCP)  ┌──────────────┐ │
+# │  │  Driver Process │◄──────────────────────►│ EngineCore   │ │
+# │  │  (主进程)        │  msgspack 序列化        │ Process(es)  │ │
+# │  │                 │                         │              │ │
+# │  │  - AsyncLLM     │                         │  - Scheduler │ │
+# │  │  - OpenAI 兼容  │                         │  - KVCacheMgr│ │
+# │  │    HTTP server  │                         │  - ModelRun  │ │
+# │  │  - OutputProc   │                         │  - Executor  │ │
+# │  │  - 统计/日志     │                         │              │ │
+# │  └────────┬────────┘                         └──────┬───────┘ │
+# │           │                                          │         │
+# │           │                                          │  spawn  │
+# │           │ HTTP                                     │         │
+# │           ▼                                          ▼         │
+# │  ┌─────────────────┐                        ┌──────────────┐ │
+# │  │  外部客户端      │                        │ Worker       │ │
+# │  │  curl/SDK/网关   │                        │ Process(es)  │ │
+# │  │                 │                        │              │ │
+# │  │                 │                        │  - GPU model │ │
+# │  │                 │                        │  - TP/PP/EP  │ │
+# │  │                 │                        │  - KV cache  │ │
+# │  └─────────────────┘                        └──────────────┘ │
+# └──────────────────────────────────────────────────────────────┘
+
+
+
+
 class EngineCore:
     """Inner loop of vLLM's Engine."""
 
@@ -121,7 +152,7 @@ class EngineCore:
         self.structured_output_manager = StructuredOutputManager(vllm_config)
 
         # Setup scheduler.
-        Scheduler = vllm_config.scheduler_config.get_scheduler_cls()
+        Scheduler = vllm_config.scheduler_config.get_scheduler_cls() # 在配置文件里提供的获取调度器类的方法
 
         if len(kv_cache_config.kv_cache_groups) == 0:  # noqa: SIM102
             # Encoder models without KV cache don't support
@@ -311,7 +342,8 @@ class EngineCore:
                 "Disabling KVTransfer for this request."
             )
 
-        self.scheduler.add_request(request)
+        self.scheduler.add_request(request)  # 添加请求到调度器，这一步才真的到调度器了
+        # 
 
     def abort_requests(self, request_ids: list[str]):
         """Abort requests from the scheduler."""
@@ -926,7 +958,19 @@ class EngineCoreProc(EngineCore):
                 parallel_config.data_parallel_rank = 0
                 engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
 
-            engine_core.run_busy_loop()
+            engine_core.run_busy_loop()  # 在这里进入主循环，调用scheduler的add_request方法
+            # 这里是主循环，会一直运行，直到收到SIGINT或SIGTERM信号
+            # AsyncLLM._add_request()
+            # → AsyncMPClient.add_request_async()
+            # → ZMQ 发送 ADD 消息
+            # → EngineCoreProc 的输入线程接收消息
+            # → preprocess_add_request()
+            # → 放入 input_queue
+            # → EngineCore 忙循环取出并分发 ADD
+            # → EngineCore.add_request()
+            # → self.scheduler.add_request()
+            # → Scheduler.add_request()
+            # → 请求进入 waiting 队列
 
         except SystemExit:
             logger.debug("EngineCore exiting.")

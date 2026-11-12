@@ -29,10 +29,13 @@ class AsyncScheduler(Scheduler):
                 + cur_num_spec_tokens
             ):
                 # The request will generate a new token plus num_spec_tokens
+                # 本轮该请求会生成一个新 token 以及 num_spec_tokens 个推测 token。
                 # in this scheduling step.
                 request.num_output_placeholders += 1 + cur_num_spec_tokens
                 # Add placeholders for the new tokens in spec_token_ids.
+                # 在 spec_token_ids 中为这些新 token 添加占位符。
                 # We will update the actual spec token ids in the worker process.
+                # 实际的推测 token ID 将在 Worker 进程中更新。
                 request.spec_token_ids = [-1] * self.num_spec_tokens
 
         scheduler_output.has_structured_output_requests = has_structured_output_requests
@@ -45,7 +48,9 @@ class AsyncScheduler(Scheduler):
     ) -> tuple[list[int], bool]:
         if request.discard_latest_async_tokens:
             # If the request is force preempted in reset_prefix_cache, we
+            # 如果请求在 reset_prefix_cache 中被强制抢占，
             # should discard the latest async token.
+            # 则应丢弃最新的异步 token。
             request.discard_latest_async_tokens = False
             return [], False
 
@@ -55,10 +60,12 @@ class AsyncScheduler(Scheduler):
         )
 
         # Update the number of output placeholders.
+        # 更新输出占位符的数量。
         request.num_output_placeholders -= len(new_token_ids)
         assert request.num_output_placeholders >= 0
 
         # Cache the new tokens. Preempted requests should be skipped.
+        # 缓存新 token；跳过已被抢占的请求。
         if status_before_update == RequestStatus.RUNNING:
             self.kv_cache_manager.cache_blocks(
                 request, request.num_computed_tokens - request.num_output_placeholders

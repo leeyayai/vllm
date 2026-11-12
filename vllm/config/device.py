@@ -48,7 +48,8 @@ class DeviceConfig:
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
         return hash_str
 
-    def __post_init__(self):
+    def __post_init__(self):  
+        # 在推理引擎启动时，自动检测当前运行平台并分配正确的硬件设备（如 CUDA、CPU、TPU 等），同时提供配置哈希计算能力以支持计算图缓存。
         if self.device == "auto":
             # Automated device type detection
             from vllm.platforms import current_platform

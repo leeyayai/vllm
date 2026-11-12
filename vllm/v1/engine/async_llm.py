@@ -70,18 +70,43 @@ class AsyncLLM(EngineClient):
         Create an AsyncLLM.
 
         Args:
+        核心配置参数
             vllm_config: global configuration.
+            全局配置对象。它包含了模型路径、张量并行度、量化方式等所有关于模型和运行环境的核心设置。
             executor_class: an Executor impl, e.g. MultiprocExecutor.
-            log_stats: Whether to log stats.
-            usage_context: Usage context of the LLM.
+            执行器类（Executor 的实现）。决定了模型如何被加载和计算，
+            例如 MultiprocExecutor（多进程执行器）或 GpuExecutor。
             mm_registry: Multi-modal registry.
+            多模态注册表（Multi-modal registry）。
+            如果模型支持多模态（如图像+文本），这个注册表用于管理多模态数据的处理逻辑。
+        上下文参数
+            usage_context: Usage context of the LLM.
+            使用上下文。用于标识当前 LLM 的使用场景（例如：离线批量推理、在线 API 服务等），
+            引擎可能会根据此上下文采用不同的调度策略或资源分配方式。
             use_cached_outputs: Whether to use cached outputs.
+            否使用缓存的输出结果;开启后，引擎会缓存之前的生成结果
+            （通常用于 Speculative Decoding 投机采样或特定的 Prefix Caching 场景），
+            避免重复计算，从而提升推理速度。
+        日志与监控参数   
+            log_stats: Whether to log stats.
+             是否记录引擎的运行统计信息（如吞吐量、延迟、队列长度等）。
             log_requests: Whether to log requests.
+            是否记录请求日志。
+            开启后，引擎会在控制台或日志文件中打印每个进入系统的请求详情（如 prompt 内容、请求 ID 等）。
+            这在调试阶段非常有用，但在生产环境中通常建议关闭，以避免日志量过大影响性能。
             start_engine_loop: Whether to start the engine loop.
+            是否启动引擎的主循环。
+            控制引擎在初始化后是否立即开始处理请求的后台循环。通常设为 True；
+            但在某些高级用法（如单元测试、手动控制引擎生命周期、或作为子组件嵌入其他系统）时，
+            可能会设为 False，由外部代码手动触发循环。
             stat_loggers: customized stat loggers for the engine.
                 If not provided, default stat loggers will be used.
                 PLEASE BE AWARE THAT STAT LOGGER IS NOT STABLE
                 IN V1, AND ITS BASE CLASS INTERFACE MIGHT CHANGE.
+            引擎的自定义统计日志记录器。
+            允许用户传入自定义的类来收集引擎的运行指标（如吞吐量、延迟、队列长度等）。
+            如果不提供，引擎会使用默认的统计记录器。
+            (vLLM V1 架构中，统计记录器的基类接口还不稳定)
 
         Returns:
             None
@@ -111,11 +136,11 @@ class AsyncLLM(EngineClient):
         else:
             tokenizer = cached_tokenizer_from_config(self.model_config)
 
-        self.input_processor = InputProcessor(self.vllm_config, tokenizer)
+        self.input_processor = InputProcessor(self.vllm_config, tokenizer) # self.vllm_config参数校验
         self.io_processor = get_io_processor(
             self.vllm_config,
             self.model_config.io_processor_plugin,
-        )
+        ) # 这都是在初始化，并非运行的流程
 
         # OutputProcessor (converts EngineCoreOutputs --> RequestOutput).
         self.output_processor = OutputProcessor(
@@ -159,7 +184,7 @@ class AsyncLLM(EngineClient):
         try:
             # Start output handler eagerly if we are in the asyncio eventloop.
             asyncio.get_running_loop()
-            self._run_output_handler()
+            self._run_output_handler()  # 启动输出处理任务
         except RuntimeError:
             pass
 
@@ -187,6 +212,7 @@ class AsyncLLM(EngineClient):
         else:
             self.profiler = None
 
+    #提供了两个 @classmethod（类方法）作为创建引擎实例的入口，它们最终都会调用底层的 cls(...) 来初始化对象。
     @classmethod
     def from_vllm_config(
         cls,
@@ -200,8 +226,9 @@ class AsyncLLM(EngineClient):
         client_addresses: dict[str, str] | None = None,
         client_count: int = 1,
         client_index: int = 0,
-    ) -> "AsyncLLM":
-        # Create the LLMEngine.
+    ) -> "AsyncLLM":  
+        # Create the LLMEngine. # 初始化 LLMEngine 引擎，加载模型权重、初始化 KV Cache 显存块、创建调度器（Scheduler）和模型执行器（ModelExecutor）。
+        # 当用户已经构建好了完整的 VllmConfig 对象，或者需要自定义客户端参数（如分布式场景下的 client_addresses, client_count）时，直接使用此方法。
         return cls(
             vllm_config=vllm_config,
             executor_class=Executor.get_class(vllm_config),
@@ -225,12 +252,13 @@ class AsyncLLM(EngineClient):
         stat_loggers: list[StatLoggerFactory] | None = None,
     ) -> "AsyncLLM":
         """Create an AsyncLLM from the EngineArgs."""
+        # 用于 API Server 启动时，接收命令行解析出的参数（AsyncEngineArgs）
 
         # Create the engine configs.
         vllm_config = engine_args.create_engine_config(usage_context)
         executor_class = Executor.get_class(vllm_config)
 
-        # Create the AsyncLLM.
+        # Create the AsyncLLM. # 初始化 AsyncLLM 引擎，加载模型权重、初始化 KV Cache 显存块、创建调度器（Scheduler）和模型执行器（ModelExecutor）。
         return cls(
             vllm_config=vllm_config,
             executor_class=executor_class,
@@ -247,7 +275,7 @@ class AsyncLLM(EngineClient):
     def shutdown(self):
         """Shutdown, cleaning up the background proc and IPC."""
 
-        shutdown_prometheus()
+        shutdown_prometheus() # 关闭 Prometheus 服务器，释放资源。
 
         if engine_core := getattr(self, "engine_core", None):
             engine_core.shutdown()
@@ -259,7 +287,7 @@ class AsyncLLM(EngineClient):
     async def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return await self.engine_core.get_supported_tasks_async()
 
-    async def add_request(
+    async def add_request(  # 添加请求，进入引擎的等待队列， 在encode和generate方法里调用
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
@@ -298,7 +326,7 @@ class AsyncLLM(EngineClient):
             tokenization_kwargs,
         )
 
-        # Convert Input --> Request.
+        # Convert Input --> Request. # 将输入转换为请求对象，用于引擎处理。
         if isinstance(prompt, EngineCoreRequest):
             request = prompt
             if request_id != request.request_id:
@@ -312,7 +340,7 @@ class AsyncLLM(EngineClient):
                 raise ValueError(
                     "should only provide prompt_text with EngineCoreRequest"
                 )
-            request = self.input_processor.process_inputs(
+            request = self.input_processor.process_inputs( # 将请求转为tokenids列表
                 request_id,
                 prompt,
                 params,
@@ -328,40 +356,95 @@ class AsyncLLM(EngineClient):
             elif isinstance(prompt, Mapping):
                 prompt_text = cast(str | None, prompt.get("prompt"))
 
-        self.input_processor.assign_request_id(request)
+        self.input_processor.assign_request_id(request)# 给当前请求分配一个唯一的 request_id
+        #      request = EngineCoreRequest(  # 举例
+        #     request_id = None,  -- 填充这个
+        #     prompt_token_ids = [101, 234, 567]
+        # )
 
         # We start the output_handler on the first call to add_request() so
         # we can call __init__ before the event loop, which enables us
         # to handle startup failure gracefully in the OpenAI server.
+        # 启动一个异步的 Output Handler，负责从 EngineCore 接收推理结果，并将结果分发给对应的请求
+        # 因为 vLLM 的请求处理是异步并发的
+        # 情况
+        # Request A ─┐
+        # Request B ─┼──→ EngineCore
+        # Request C ─┘
+        #                 |
+        #                 | 推理结果
+        #                 v
+        #             OutputHandler
+        #                 |
+        #         ┌────────┼────────┐
+        #         v        v        v
+        #     Queue A  Queue B  Queue C
+        # EngineCore 产生的输出需要被正确分发到对应请求的输出队列。
+        # 不在 AsyncLLM.__init__() 中启动 OutputHandler，而是在第一次调用 add_request() 时启动。
         self._run_output_handler()
 
+
         # Respect pause state before accepting new requests.
+        # 检查 vLLM 当前是否处于暂停状态。
         async with self._pause_cond:
             await self._pause_cond.wait_for(lambda: not self._paused)
 
         # Create a new output collector for the request.
+        # 给当前请求创建一个专属的输出收集器。
+        # 因为一个请求的生成过程可能会产生很多次输出。
+        # Request A
+        #     |
+        #     | 第一次生成
+        #     v
+        #     Token 1
+        #     |
+        #     | 第二次生成
+        #     v
+        #     Token 2
+        #     |
+        #     | 第三次生成
+        #     v
+        #     Token 3
+        # params.output_kind：决定输出形式，例如累积输出还是增量输出等。
+        # request.request_id：标识这个收集器属于哪个请求。
         queue = RequestOutputCollector(params.output_kind, request.request_id)
 
         # Use cloned params that may have been updated in process_inputs()
         params = request.params
 
         if is_pooling or params.n == 1:
-            await self._add_request(request, prompt_text, None, 0, queue)
+            await self._add_request(request, prompt_text, None, 0, queue) # 添加请求
             return queue
 
         parent_params = params
         assert isinstance(parent_params, SamplingParams)
 
+    #     request = EngineCoreRequest(  n=3 对于一个问题用户希望有3个回答
+    #     request_id="parent-001",
+    #     prompt_token_ids=[101, 102, 103],
+    #     sampling_params=SamplingParams(n=3)
+    # )
         # Fan out child requests (for n>1).
+        # Child 0:
+        #     request_id = child-0
+        #     prompt_token_ids = [101, 102, 103]
+
+        # Child 1:
+        #     request_id = child-1
+        #     prompt_token_ids = [101, 102, 103]
+
+        # Child 2:
+        #     request_id = child-2
+        #     prompt_token_ids = [101, 102, 103]
         parent_request = ParentRequest(request)
         for idx in range(parent_params.n):
             request_id, child_params = parent_request.get_child_info(idx)
             child_request = request if idx == parent_params.n - 1 else copy(request)
-            child_request.request_id = request_id
+            child_request.request_id = request_id # 建立子请求
             child_request.sampling_params = child_params
             await self._add_request(
                 child_request, prompt_text, parent_request, idx, queue
-            )
+            ) # 添加子请求
         return queue
 
     async def _add_request(
@@ -372,10 +455,16 @@ class AsyncLLM(EngineClient):
         index: int,
         queue: RequestOutputCollector,
     ):
-        # Add the request to OutputProcessor (this process).
+        # Add the request to OutputProcessor (this process). 在当前 Driver Process 的 OutputProcessor 中登记请求。
         self.output_processor.add_request(request, prompt, parent_req, index, queue)
 
-        # Add the EngineCoreRequest to EngineCore (separate process).
+        # 为什么要先添加到 OutputProcessor？
+        # 因为请求发送给 EngineCore 后，EngineCore 可能很快就产生输出。
+        # Driver Process 必须提前登记好这个请求，才能知道后面收到的输出应该交给哪个请求对应的 queue。
+        # 可以理解为：先建立输出接收档案，再把请求发送出去。
+
+        # Add the EngineCoreRequest to EngineCore (separate process). 把 EngineCoreRequest 发送给独立的 EngineCore 进程。
+        # EngineCore 会根据请求的 sampling_params 进行推理。进入 Scheduler 的 waiting 队列,再进入running队列
         await self.engine_core.add_request_async(request)
 
         if self.log_requests:
@@ -386,7 +475,7 @@ class AsyncLLM(EngineClient):
     # requests we don't need to send multiple messages to core proc,
     # and so we don't need multiple streams which then get
     # re-multiplexed in the API server anyhow.
-    async def generate(
+    async def generate(  # 主函数，生成请求
         self,
         prompt: EngineCoreRequest | PromptType,
         sampling_params: SamplingParams,
@@ -413,10 +502,12 @@ class AsyncLLM(EngineClient):
         The caller of generate() iterates the returned AsyncGenerator,
         returning the RequestOutput back to the caller.
         """
+        # generate() 本身不负责模型推理，也不负责 Scheduler 调度。它是一个异步生成器，主要负责提交请求，
+        # 然后持续从输出队列中取出结果，逐步返回给调用者
 
-        q: RequestOutputCollector | None = None
+        q: RequestOutputCollector | None = None # 初始化一个空的 RequestOutputCollector 实例
         try:
-            q = await self.add_request(
+            q = await self.add_request(  # 添加请求
                 request_id,
                 prompt,
                 sampling_params,
@@ -426,12 +517,12 @@ class AsyncLLM(EngineClient):
                 priority=priority,
                 data_parallel_rank=data_parallel_rank,
                 prompt_text=prompt_text,
-            )
+            )  # 等待 add_request 里的返回的 RequestOutputCollector
 
             # The output_handler task pushes items into the queue.
             # This task pulls from the queue and yields to caller.
             finished = False
-            while not finished:
+            while not finished:  # 循环从输出队列中取出结果，直到请求完成
                 # Note: drain queue without await if possible (avoids
                 # task switching under load which helps performance).
                 out = q.get_nowait() or await q.get()
@@ -482,6 +573,14 @@ class AsyncLLM(EngineClient):
 
     def _run_output_handler(self):
         """Background loop: pulls from EngineCore and pushes to AsyncStreams."""
+        # 后台异步输出处理循环（Background Output Handler），负责不断从 EngineCore 获取模型推理结果，
+        # 经过 OutputProcessor 处理后，把结果放入之前创建的 RequestOutputCollector 队列中。
+
+        # generate()：消费者，等待并获取结果。
+        # OutputHandler：后台搬运工，持续接收和处理结果。
+        # OutputProcessor：负责处理结果、匹配请求、组织输出。
+        # RequestOutputCollector：保存每个请求的输出，供 generate() 获取。
+        # EngineCore：真正负责调度和执行模型推理。
 
         if self.output_handler is not None:
             return
@@ -496,6 +595,19 @@ class AsyncLLM(EngineClient):
         chunk_size = envs.VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
 
         async def output_handler():
+                #              AsyncLLM
+                #                 |
+                #     一个 OutputHandler
+                #                 |
+                #         EngineCore
+                #                 |
+                #     ┌──────────┼──────────┐
+                #     v          v          v
+                # Req A      Req B      Req C
+                #     |          |          |
+                #     v          v          v
+                # Queue A    Queue B    Queue C
+    # EngineCore 可以一次返回多个请求的输出，OutputHandler 可以统一处理这些输出，再按照 request_id 分发给各自的请求队列。
             try:
                 while True:
                     # 1) Pull EngineCoreOutputs from the EngineCore.
@@ -625,6 +737,26 @@ class AsyncLLM(EngineClient):
         truncate_prompt_tokens: int | None = None,
         tokenization_kwargs: dict[str, Any] | None = None,
     ) -> AsyncGenerator[PoolingRequestOutput, None]:
+
+        # generate()：文本生成任务（Generation），例如输入一段话，让模型继续生成文本。
+        # encode()：Pooling 任务，例如 Embedding、文本向量提取、分类等。
+        # 文本生成：
+        # async def generate(...):
+        #     q = await self.add_request(
+        #         request_id,
+        #         prompt,
+        #         sampling_params,
+        #         ...
+        #     )    
+        #   向量提取
+        #  async def encode(...):
+        #     q = await self.add_request(
+        #         request_id,
+        #         prompt,
+        #         pooling_params,
+        #         ...
+        #     ) 
+        
         """
         Main function called by the API server to kick off a request
             * 1) Making an AsyncStream corresponding to the Request.

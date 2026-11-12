@@ -163,15 +163,21 @@ class KVCacheManager:
 
     def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
         """Get the computed (cached) blocks for the request.
+        获取请求已计算并缓存的 block。
         Note that the computed blocks must be full.
+        注意：已计算的 block 必须是完整 block。
 
         Args:
             request: The request to get the computed blocks.
+            request：要查询已计算 block 的请求。
 
         Returns:
             A tuple containing:
+            返回一个元组，包含：
                 - A list of blocks that are computed for the request.
+                - 请求已计算 block 的列表。
                 - The number of computed tokens.
+                - 已计算 token 的数量。
         """
         # We skip finding the prefix cache hit when prefix caching is
         # disabled or the request is marked as skipping kv cache read
@@ -215,6 +221,7 @@ class KVCacheManager:
         num_encoder_tokens: int = 0,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
+        为请求追加新 token，并分配相应的 KV slots。
 
         Args:
             request: The request to allocate slots.
@@ -236,6 +243,7 @@ class KVCacheManager:
                 For decoder-only models, this should be 0.
 
         Blocks layout:
+        block 布局如下：
         ```
         ----------------------------------------------------------------------
         | < comp > | < new_comp > | < ext_comp >  | < new >  | < lookahead > |
@@ -259,6 +267,7 @@ class KVCacheManager:
         ```
 
         Abbrivations:
+        缩写说明：
 
         ```
         comp      = request.num_computed_tokens
@@ -270,10 +279,14 @@ class KVCacheManager:
         ```
 
         NOTE: for new tokens which include both verified and unverified draft
+        注意：若新 token 同时包含已验证和未验证的草稿 token，
         tokens, we only cache the verified tokens (by capping the number at
+        只缓存已验证的 token（将数量限制在
         `request.num_tokens`).
+        `request.num_tokens` 以内）。
 
         The allocation has three stages:
+        分配过程分为三个阶段：
         - Free unnecessary blocks in `comp` and check
            if we have sufficient free blocks (return None if not).
         - Handle prefix tokens (`comp + new_comp + ext_comp`):
@@ -284,9 +297,12 @@ class KVCacheManager:
 
         Returns:
             A list of new allocated blocks.
+            新分配的 block 列表。
         """
         # When loading KV data asynchronously, we may have zero new tokens to
+        # 异步加载 KV 数据时，可能没有新 token 需要计算，
         # compute while still allocating slots for externally computed tokens.
+        # 但仍需为外部计算的 token 分配 slot。
         if num_new_tokens == 0 and num_external_computed_tokens == 0:
             raise ValueError(
                 "num_new_tokens must be greater than 0 when there are no "
@@ -299,7 +315,9 @@ class KVCacheManager:
             new_computed_block_list = self.empty_kv_cache_blocks.blocks
 
         # The number of computed tokens is the number of computed tokens plus
+        # 已计算 token 数量等于原有已计算 token 数
         # the new prefix caching hits
+        # 加上新命中的前缀缓存 token 数。
         num_local_computed_tokens = (
             request.num_computed_tokens + num_new_computed_tokens
         )
@@ -313,11 +331,17 @@ class KVCacheManager:
         )
 
         # Free the blocks that are skipped during the attention computation
+        # 释放 attention 计算中会跳过的 block，
         # (e.g., tokens outside the sliding window).
+        # 例如滑动窗口之外的 token 对应的 block。
         # We can do this even if we cannot schedule this request due to
+        # 即使因空闲 block 不足而无法调度该请求，
         # insufficient free blocks.
+        # 仍可先执行此操作。
         # Should call this function before allocating new blocks to reduce
+        # 应在分配新 block 前调用此方法，以减少
         # the number of evicted blocks.
+        # 需要淘汰的 block 数量。
         self.coordinator.remove_skipped_blocks(
             request.request_id, total_computed_tokens
         )
@@ -333,6 +357,7 @@ class KVCacheManager:
 
         if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
             # Cannot allocate new blocks
+            # 无法分配新 block。
             return None
 
         if (
@@ -340,7 +365,9 @@ class KVCacheManager:
             or num_external_computed_tokens > 0
         ):
             # Append the new computed blocks to the request blocks until now to
+            # 先将新命中的已计算 block 追加到请求当前持有的 block 列表，
             # avoid the case where the new blocks cannot be allocated.
+            # 避免之后无法分配新 block 时留下不一致状态。
             self.coordinator.allocate_new_computed_blocks(
                 request_id=request.request_id,
                 new_computed_blocks=new_computed_block_list,
@@ -353,15 +380,22 @@ class KVCacheManager:
         )
 
         # P/D: delay caching blocks if we have to recv from
+        # P/D：如果需要从远端接收 KV，则延迟缓存这些 block，
         # remote. Update state for locally cached blocks.
+        # 但更新本地缓存 block 的状态。
         if not self.enable_caching or delay_cache_blocks:
             return self.create_kv_cache_blocks(new_blocks)
 
         # NOTE(woosuk): We want to commit (cache) up to num_local_computed_tokens
+        # 注意（woosuk）：希望缓存到 num_local_computed_tokens
         # + num_external_computed_tokens + num_new_tokens, but must exclude
+        # + num_external_computed_tokens + num_new_tokens 的位置，但必须排除
         # "non-committable" tokens (e.g., draft tokens that could be rejected).
+        # “不可提交”的 token（例如之后可能被拒绝的草稿 token）。
         # Therefore, we cap the number at `request.num_tokens`, ensuring only
+        # 因此将数量限制为 `request.num_tokens`，确保只缓存
         # "finalized" tokens are cached.
+        # 已最终确定的 token。
         num_tokens_to_cache = min(
             total_computed_tokens + num_new_tokens,
             request.num_tokens,
@@ -372,11 +406,15 @@ class KVCacheManager:
 
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.
+        释放为该请求分配的 block。
         We free the blocks in reverse order so that the tail blocks are evicted
+        按逆序释放 block，使尾部 block 在启用缓存时优先被淘汰，
         first when caching is enabled.
+        从而保留更靠前的前缀 block。
 
         Args:
             request: The request to free the blocks.
+            request：要释放其 block 的请求。
         """
         self.coordinator.free(request.request_id)
 
@@ -384,31 +422,43 @@ class KVCacheManager:
         self, request_id: str, total_computed_tokens: int
     ) -> None:
         """Remove the blocks that are no longer needed from `blocks` and replace
+        移除 `blocks` 中不再需要的 block，并用
         the removed blocks with null_block.
+        null_block 替换被移除的位置。
 
         Args:
             request_id: The request ID.
+            request_id：请求 ID。
             total_computed_tokens: The total number of computed tokens, including
+            total_computed_tokens：已计算 token 总数，包括
                 local computed tokens and external computed tokens.
+                本地和外部计算的 token。
         """
         self.coordinator.remove_skipped_blocks(request_id, total_computed_tokens)
 
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.
+        根据 block ID 从前缀缓存中淘汰 block。
 
         Args:
             block_ids: Set of block IDs to evict from cache.
+            block_ids：要从缓存中淘汰的 block ID 集合。
         """
         self.block_pool.evict_blocks(block_ids)
 
     def reset_prefix_cache(self) -> bool:
         """Reset prefix cache. This function may be used in RLHF
+        重置前缀缓存。此函数可用于 RLHF 流程中，
         flows to invalidate prefix caching after the weights are updated,
+        在权重更新后使前缀缓存失效，
         or used for resetting prefix caching status for benchmarking.
+        也可用于基准测试时重置前缀缓存状态。
 
         Returns:
             bool: True if the prefix cache is successfully reset,
+            bool：前缀缓存重置成功时为 True，
             False otherwise.
+            否则为 False。
         """
         if not self.block_pool.reset_prefix_cache():
             return False
@@ -419,61 +469,92 @@ class KVCacheManager:
 
     def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
         """Calculate the number of common prefix blocks for each kv cache group.
+        计算每个 KV cache group 中的公共前缀 block 数量。
 
         The function selects a running request and iterates through its blocks.
+        此函数选择一个运行中请求并遍历其 block。
         A block is considered a common prefix block if ALL requests with
+        如果所有持有
         allocated KV cache share it (i.e., ref_cnt equals the number of entries
+        已分配 KV cache 的请求都共享某个 block，则该 block 被视为公共前缀 block
         in req_to_blocks).
+        （即 ref_cnt 等于 req_to_blocks 中的请求条目数）。
 
         NOTE(woosuk): The number of requests with allocated KV cache is **greater
+        注意（woosuk）：已分配 KV cache 的请求数**大于或等于**
         than or equal to** the number of requests scheduled in the current step.
+        当前步骤中调度的请求数，
         This is because having allocated KV cache only indicates that:
+        因为已分配 KV cache 仅表示：
         1. The request has not yet finished, and
+        1. 请求尚未结束；
         2. The request holds its blocks unfreed.
+        2. 请求持有的 block 尚未释放。
 
         While all scheduled requests must have allocated KV cache, the inverse
+        虽然所有已调度请求都必定已分配 KV cache，但反过来
         is not necessarily true. There may be requests with allocated KV cache
+        不一定成立。可能存在已分配 KV cache、
         that are not scheduled in the current step.
+        但本轮未调度的请求。
 
         This can result in an edge case where the number of common prefix blocks
+        因此可能出现一种边缘情况：所有已调度请求共享某个前缀，
         is 0, even though all scheduled requests share a common prefix. This
+        但公共前缀 block 数仍为 0。这是因为
         occurs because there may be unscheduled requests that do not share the
+        也可能存在本轮未调度、且不共享该前缀的请求。
         common prefix. Currently, this case cannot be easily detected, so the
+        目前难以检测这种情况，因此
         function returns 0 in such cases.
+        此时本函数返回 0。
 
         Args:
             running_request_id: The request ID of any running request, used to
+            running_request_id：任一运行中请求的 ID，用于
                 identify the common prefix blocks.
+                识别公共前缀 block。
 
         Returns:
             list[int]: The number of common prefix blocks for each kv cache
+            list[int]：每个 KV cache group 的公共前缀 block 数。
             group.
         """
         return self.coordinator.get_num_common_prefix_blocks(running_request_id)
 
     def take_events(self) -> list[KVCacheEvent]:
         """Take the KV cache events from the block pool.
+        从 block pool 中取出 KV cache 事件。
 
         Returns:
             A list of KV cache events.
+            KV cache 事件列表。
         """
         return self.block_pool.take_events()
 
     def get_blocks(self, request_id: str) -> KVCacheBlocks:
-        """Get the blocks of a request."""
+        """Get the blocks of a request.
+        获取请求的 block。
+        """
         return self.create_kv_cache_blocks(self.coordinator.get_blocks(request_id))
 
     def get_block_ids(self, request_id: str) -> tuple[list[int], ...]:
-        """Get the block ids of a request."""
+        """Get the block ids of a request.
+        获取请求的 block ID。
+        """
         return self.get_blocks(request_id).get_block_ids()
 
     def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
         """Cache the blocks for the request, if enabled.
+        启用缓存时，缓存该请求的 block。
 
         Args:
             request: The request to cache the blocks.
+            request：要缓存 block 的请求。
             num_computed_tokens: The number of computed tokens, including tokens
+            num_computed_tokens：已计算 token 数量，包括
                 that are already cached and tokens to be cached.
+                已缓存和将要缓存的 token。
         """
         if self.enable_caching:
             self.coordinator.cache_blocks(request, num_computed_tokens)
@@ -482,4 +563,5 @@ class KVCacheManager:
         self, blocks: tuple[list[KVCacheBlock], ...]
     ) -> KVCacheBlocks:
         # Only create new KVCacheBlocks for non-empty blocks
+        # 仅当 block 列表非空时才创建新的 KVCacheBlocks。
         return KVCacheBlocks(blocks) if any(blocks) else self.empty_kv_cache_blocks

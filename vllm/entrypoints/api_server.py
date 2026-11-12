@@ -42,9 +42,11 @@ async def health() -> Response:
     """Health check."""
     return Response(status_code=200)
 
-
+# vLLM 的简易 vllm/entrypoints/api_server.py，
+# 它和生产环境常用的 vllm/entrypoints/openai/api_server.py 不是同一个入口。
+# 生产级的兼容了 OpenAI 的 API 接口，
 @app.post("/generate")
-async def generate(request: Request) -> Response:
+async def generate(request: Request) -> Response: # 异步处理请求，对外暴露的核心异步接口
     """Generate completion for the request.
 
     The request should be a JSON object with the following fields:
@@ -52,6 +54,8 @@ async def generate(request: Request) -> Response:
     - stream: whether to stream the results or not.
     - other fields: the sampling parameters (See `SamplingParams` for details).
     """
+    # 对外暴露的核心异步接口。当
+    # 接收到用户的 HTTP 请求时，它会将用户的 prompt 和采样参数封装成一个内部请求，添加到引擎的等待队列中
     request_dict = await request.json()
     return await _generate(request_dict, raw_request=request)
 
@@ -66,6 +70,9 @@ async def _generate(request_dict: dict, raw_request: Request) -> Response:
 
     assert engine is not None
     results_generator = engine.generate(prompt, sampling_params, request_id)
+    # 调用 async_llm.py 的 generate 方法，
+    # 它会将 prompt prompt 和采样参数 sampling_params 传递给引擎的等待队列，
+    # 并返回一个异步生成器，用于异步获取生成结果。
 
     # Streaming case
     async def stream_results() -> AsyncGenerator[bytes, None]:
@@ -113,10 +120,13 @@ async def init_app(
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine = (
         llm_engine
+        # 如果提供了预创建的 AsyncLLMEngine 实例，直接使用它
         if llm_engine is not None
         else AsyncLLMEngine.from_engine_args(
             engine_args, usage_context=UsageContext.API_SERVER
         )
+        # 工厂方法，它根据命令行传入的参数（如模型路径、显存大小、并行策略等）构建并初始化整个 vLLM 引擎。
+        # 它会加载模型权重、初始化 KV Cache 显存块、创建调度器（Scheduler）和模型执行器（ModelExecutor）。
     )
     app.state.engine_client = engine
     app.state.args = args
@@ -132,6 +142,7 @@ async def run_server(
     set_ulimit()
 
     app = await init_app(args, llm_engine)
+    # 由于 engine 是在 init_app 中初始化的，因此在这里断言它不为 None
     assert engine is not None
 
     shutdown_task = await serve_http(
@@ -181,6 +192,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--log-level", type=str, default="debug")
     parser = AsyncEngineArgs.add_cli_args(parser)
+    #添加 引擎参数
     args = parser.parse_args()
 
     asyncio.run(run_server(args))

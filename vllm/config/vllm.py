@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+# 为整个vllm框架导入配置参数
+# 为整个 vLLM 引擎引入所需的依赖项、定义类型别名，
+# 并导入各个子模块的配置类（如模型配置、缓存配置、调度器配置等）。
+
 import copy
 import getpass
 import json
@@ -12,67 +16,100 @@ from contextlib import contextmanager
 from dataclasses import is_dataclass, replace
 from datetime import datetime
 from enum import IntEnum
-from functools import lru_cache
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, get_args
+from functools import lru_cache  #lru_cache 用于缓存
+from pathlib import Path  #Path 用于路径处理
+from typing import TYPE_CHECKING, Any, TypeVar, get_args  #TYPE_CHECKING 用于类型检查时的条件导入
 
 import torch
 from pydantic import ConfigDict, Field, model_validator
 from pydantic.dataclasses import dataclass
+# vLLM 使用 pydantic 来进行严格的数据验证和配置管理。
+# 通过 dataclass 和 Field，vLLM 可以确保传入的参数类型正确，并在参数缺失时提供默认值。
 
-import vllm.envs as envs
+#vLLM 内部工具与环境变量导入，导入 vLLM 框架自身的工具函数。
+import vllm.envs as envs #envs 用于读取环境变量
 from vllm.config.speculative import EagleModelTypes
-from vllm.logger import enable_trace_function_call, init_logger
+from vllm.logger import enable_trace_function_call, init_logger  #init_logger 用于初始化日志系统
 from vllm.transformers_utils.runai_utils import is_runai_obj_uri
+# is_runai_obj_uri 用于判断是否使用了 Run:ai 等分布式资源调度平台。
 from vllm.utils import random_uuid
-from vllm.utils.hashing import safe_hash
+from vllm.utils.hashing import safe_hash#safe_hash 用于生成哈希值（在 Prefix Caching 前缀缓存中非常关键）
 
-from .attention import AttentionConfig
-from .cache import CacheConfig
+# 核心子模块配置类导入
+# vLLM 的模块化配置架构体现。vLLM 将极其复杂的引擎参数拆分成了多个独立的配置类
+from .attention import AttentionConfig #管理注意力机制相关配置
+from .cache import CacheConfig #管理 KV Cache 显存分配
 from .compilation import CompilationConfig, CompilationMode, CUDAGraphMode
+# 编译配置类，用于管理模型的编译选项，如是否使用 CUDA、是否使用 CUDAGraph 等。
 from .device import DeviceConfig
+# 设备配置类，用于管理模型运行的硬件设备，如 GPU、CPU 等。
 from .ec_transfer import ECTransferConfig
+# EC 转移配置类，用于管理模型在不同设备之间的数据传输。
 from .kv_events import KVEventsConfig
+# KV 事件配置类，用于管理模型在不同设备之间的 KV 数据事件。
 from .kv_transfer import KVTransferConfig
+# KV 转移配置类，用于管理模型在不同设备之间的 KV 数据传输。
 from .load import LoadConfig
+# 加载配置类，用于管理模型的加载选项，如是否使用 CUDA、是否使用 CUDAGraph 等。
 from .lora import LoRAConfig
+# LoRA 配置类，用于管理 LoRA（Low-Rank Adaptation）相关的参数。
 from .model import ModelConfig
+# 模型配置类，用于管理模型的架构、参数、训练选项等。
 from .observability import ObservabilityConfig
+# 可观测性配置类，用于管理模型的监控、日志记录、指标收集等。    
 from .parallel import ParallelConfig
+# 并行配置类，用于管理模型的分布式训练、数据并行、模型并行等选项。
 from .profiler import ProfilerConfig
+# Profiler 配置类，用于管理模型的性能分析、调试等选项。
 from .scheduler import SchedulerConfig
+# 调度器配置类，用于管理模型的任务调度、资源分配等选项。
 from .speculative import SpeculativeConfig
+# 预计算配置类，用于管理模型的预计算选项，如是否使用预计算张量等。
 from .structured_outputs import StructuredOutputsConfig
+# 结构化输出配置类，用于管理模型的输出格式、输出类型等选项。
 from .utils import SupportsHash, config
+# 工具类，用于管理模型的哈希值、配置等。
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # 性能优化技巧
+    # TYPE_CHECKING 是一个特殊的类型检查标志，用于在类型检查时导入模块，而不会在运行时实际导入它们。
+    # TYPE_CHECKING 是一个在运行时永远为 False 的常量，但在 IDE 或静态类型检查工具（如 mypy）中为 True。
     from transformers import PretrainedConfig
 
     from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
     from vllm.v1.kv_cache_interface import KVCacheConfig
+    # 在类型检查时：导入 PretrainedConfig（HuggingFace 模型配置）、
+    # QuantizationConfig（量化配置）等，让 IDE 能够正确提示代码。
 else:
     PretrainedConfig = Any
 
     QuantizationConfig = Any
 
     KVCacheConfig = Any
+    #运行时，将这些复杂的类直接赋值为 Any。
+    # 这样可以避免在 vLLM 启动时导入庞大的 HuggingFace Transformers 库，从而显著加快 vLLM 的启动速度并减少内存占用。
 
 logger = init_logger(__name__)
 
 
-class OptimizationLevel(IntEnum):
+class OptimizationLevel(IntEnum): # 优化级别枚举
     """Optimization level enum."""
+    # 定义了四个不同的优化等级，级别越高，编译和优化越彻底，但启动时的编译耗时也会相应增加。
 
     O0 = 0
     """O0 : No optimization. no compilation, no cudagraphs, no other
     optimization, just starting up immediately"""
+    # 不进行任何优化，直接启动模型。不会使用 Torch Dynamo/Inductor 编译，也不会捕获 CUDA Graphs
+    # 启动快
     O1 = 1
     """O1: Quick optimizations. Dynamo+Inductor compilation and Piecewise
     cudagraphs"""
+    # 使用 Torch Dynamo + Inductor 进行图编译，并仅捕获“分段”（Piecewise）的 CUDA Graphs。
     O2 = 2
     """O2: Full optimizations. -O1 as well as Full and Piecewise cudagraphs."""
+    #进一步捕获“完整”（Full）和“分段”（Piecewise）的 CUDA Graphs。
+    # 这是生产环境推荐的最高性能模式，能最大化推理吞吐量，但启动时的编译和图捕获时间最长。
     O3 = 3
-    """O3: Currently the same as -O2s."""
+    """O3: Currently the same as -O2s."""  # 预留级别
 
 
 IS_QUANTIZED = False
@@ -84,28 +121,49 @@ IS_DENSE = False
 #     IS_DENSE = lambda c: not c.model_config.is_model_moe()
 # See https://github.com/vllm-project/vllm/issues/25689.
 
-
+# 算子融合（Operator Fusion）条件判断函数。
+# 多个小算子（如归一化、激活函数）合并为一个大算子，可以显著减少显存读写次数，从而大幅提升性能。
+# 在什么情况下，vLLM 需要手动介入并开启这些融合优化。
 def enable_norm_fusion(cfg: "VllmConfig") -> bool:
     """Enable if either RMS norm or quant FP8 custom op is active;
     otherwise Inductor handles fusion."""
+    # enable_norm_fusion
+    # 判断是否开启 RMSNorm（均方根归一化）的算子融合。
+    
 
     return cfg.compilation_config.is_custom_op_enabled(
-        "rms_norm"
-    ) or cfg.compilation_config.is_custom_op_enabled("quant_fp8")
+        "rms_norm"  # 判断是否启用了 RMSNorm 自定义算子
+    ) or cfg.compilation_config.is_custom_op_enabled("quant_fp8")  # 判断是否启用了 FP8 量化自定义算子
+    # 如果启用了 RMSNorm 或 FP8 量化自定义算子，就开启归一化算子融合。
+    # 如果上述两个自定义算子都没有被激活，
+    # 那么 vLLM 就会把这部分工作交给 PyTorch 的 Inductor 编译器去自动处理融合（otherwise Inductor handles fusion）。
 
 
 def enable_act_fusion(cfg: "VllmConfig") -> bool:
+    # enable_act_fusion
+    # 判断是否开启 SiLU+Mul（SiLU 激活函数）的算子融合。
+
     """Enable if either SiLU+Mul or quant FP8 custom op is active;
     otherwise Inductor handles fusion."""
     return cfg.compilation_config.is_custom_op_enabled(
-        "silu_and_mul"
-    ) or cfg.compilation_config.is_custom_op_enabled("quant_fp8")
+        "silu_and_mul" # 判断是否启用了 SiLU+Mul 自定义算子
+    ) or cfg.compilation_config.is_custom_op_enabled("quant_fp8")  # 判断是否启用了 FP8 量化自定义算子
+# 如果启用了 SiLU+Mul 或 FP8 量化自定义算子，就开启激活函数算子融合。
+# 如果上述两个自定义算子都没有被激活，
+# 那么 vLLM 就会把这部分工作交给 PyTorch 的 Inductor 编译器去自动处理融合（otherwise Inductor handles fusion）。
+
+# CustomOp 优先：当 vLLM 针对特定硬件（如 NVIDIA GPU）提供了高度优化的底层 C++/CUDA 自定义算子（如手写的 FP8 量化、RMSNorm、SiLU+Mul）时，vLLM 会优先使用这些算子，并在编译配置中开启对应的融合。
+# 其它芯片的vllm的插件也是一样的
+# Inductor 兜底：如果没有使用这些特定的自定义算子，vLLM 不会让模型以低效的原始状态运行，而是将普通的 PyTorch 代码交给 Inductor 编译器，利用 Inductor 的自动图优化能力来完成算子融合。
 
 
+# 通过 OPTIMIZATION_LEVEL_TO_CONFIG 将它们与 OptimizationLevel 枚举类进行了映射。
+#在 vLLM 的编译管线中，算子融合（Operator Fusion）是提升推理性能的核心手段，它通过将多个小算子合并为一个大算子，减少显存读写次数（即“让数据少跑路”）。
+# 这段代码正是通过控制 pass_config 中的各个开关，来决定在不同级别下开启哪些融合与优化策略。
 OPTIMIZATION_LEVEL_00 = {
     "compilation_config": {
         "pass_config": {
-            "eliminate_noops": False,
+            "eliminate_noops": False, 
             "fuse_norm_quant": False,
             "fuse_act_quant": False,
             "fuse_allreduce_rms": False,
@@ -117,6 +175,16 @@ OPTIMIZATION_LEVEL_00 = {
         "use_inductor_graph_partition": False,
     },
 }
+# eliminate_noops 是否剔除计算图中没有实际作用的空操作（No-ops），精简计算图
+# fuse_norm_quant 是否将归一化（Normalization）和量化（Quantization）操作融合为一个算子，减少显存读写
+# fuse_act_quant 是否将激活函数（Activation）和量化（Quantization）操作融合为一个算子，减少显存读写
+# fuse_allreduce_rms 是否将 RMSNorm（均方根归一化）和 AllReduce（全局reduce）操作融合为一个算子，减少显存读写
+# fuse_attn_quant 是否将注意力（Attention）和量化（Quantization）操作融合为一个算子，减少显存读写
+    # 只有在当前模型是量化模型时，才会开启注意力机制与量化的融合。
+# enable_sp 是否开启 Sp（Sparse）算子融合，减少显存占用
+    # 只有在当前模型是密集模型时，才会开启 Sp 算子融合。
+# fuse_gemm_comms 是否开启 Gemm（Matrix-Matrix Multiplication矩阵乘法与通信融合）算子融合，减少显存占用
+    # 只有在当前模型是密集模型时，才会开启 Gemm 算子融合。
 OPTIMIZATION_LEVEL_01 = {
     "compilation_config": {
         "pass_config": {
@@ -171,46 +239,51 @@ OPTIMIZATION_LEVEL_TO_CONFIG = {
 }
 
 
-@config
+@config # config 装饰器用于注册配置类，使其可以被 vLLM 的配置管理系统识别和使用。
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+# VllmConfig 类包含了所有与 vLLM 相关的配置项，包括模型配置、缓存配置、并行配置、调度器配置、设备配置、加载配置、注意力配置、LoRA 配置、推测配置、结构化输出配置、观察配置、量化配置、编译配置等。
+# 类似Java的@data注解，简化了配置类的定义，使代码更简洁。
 class VllmConfig:
     """Dataclass which contains all vllm-related configuration. This
     simplifies passing around the distinct configurations in the codebase.
     """
+    # 推理引擎的全局核心配置类 VllmConfig
+    # 避免在函数调用时传递几十个零散的参数，框架将所有的配置项进行了模块化拆分，然后统一封装进这个 VllmConfig 数据类中。
 
     # TODO: use default_factory once default constructing ModelConfig doesn't
     # try to download a model
-    model_config: ModelConfig = Field(default=None)
+    model_config: ModelConfig = Field(default=None) # 模型配置
     """Model configuration."""
-    cache_config: CacheConfig = Field(default_factory=CacheConfig)
+    cache_config: CacheConfig = Field(default_factory=CacheConfig) # 缓存配置
     """Cache configuration."""
-    parallel_config: ParallelConfig = Field(default_factory=ParallelConfig)
+    parallel_config: ParallelConfig = Field(default_factory=ParallelConfig) # 并行配置
     """Parallel configuration."""
-    scheduler_config: SchedulerConfig = Field(
+    scheduler_config: SchedulerConfig = Field(  # 调度器配置
         default_factory=SchedulerConfig.default_factory,
     )
     """Scheduler configuration."""
-    device_config: DeviceConfig = Field(default_factory=DeviceConfig)
+    device_config: DeviceConfig = Field(default_factory=DeviceConfig) # 设备配置
     """Device configuration."""
-    load_config: LoadConfig = Field(default_factory=LoadConfig)
+    load_config: LoadConfig = Field(default_factory=LoadConfig) # 加载配置
     """Load configuration."""
-    attention_config: AttentionConfig = Field(default_factory=AttentionConfig)
+    attention_config: AttentionConfig = Field(default_factory=AttentionConfig) # 注意力配置
     """Attention configuration."""
     lora_config: LoRAConfig | None = None
     """LoRA configuration."""
-    speculative_config: SpeculativeConfig | None = None
+    speculative_config: SpeculativeConfig | None = None # 投机采样（
     """Speculative decoding configuration."""
-    structured_outputs_config: StructuredOutputsConfig = Field(
+    structured_outputs_config: StructuredOutputsConfig = Field( # 结构化输出配置
         default_factory=StructuredOutputsConfig
     )
     """Structured outputs configuration."""
-    observability_config: ObservabilityConfig = Field(
+    observability_config: ObservabilityConfig = Field( # 观察配置，集成 Prometheus 等监控指标。
         default_factory=ObservabilityConfig
     )
     """Observability configuration."""
-    quant_config: QuantizationConfig | None = None
+    quant_config: QuantizationConfig | None = None # 量化配置
     """Quantization configuration."""
-    compilation_config: CompilationConfig = Field(default_factory=CompilationConfig)
+    compilation_config: CompilationConfig = Field(default_factory=CompilationConfig) # 编译配置，编译与 CUDA Graph 配置
+    # 对应上面的 OPTIMIZATION_LEVEL_TO_CONFIG 中的配置项，O0，O1，O2，O3
     """`torch.compile` and cudagraph capture configuration for the model.
 
     As a shorthand, one can append compilation arguments via
@@ -219,13 +292,13 @@ class VllmConfig:
     You can specify the full compilation config like so:
     `{"mode": 3, "cudagraph_capture_sizes": [1, 2, 4, 8]}`
     """
-    profiler_config: ProfilerConfig = Field(default_factory=ProfilerConfig)
+    profiler_config: ProfilerConfig = Field(default_factory=ProfilerConfig) #性能分析（Profiling）配置。用于抓取 GPU 底层的性能瓶颈。
     """Profiling configuration."""
-    kv_transfer_config: KVTransferConfig | None = None
+    kv_transfer_config: KVTransferConfig | None = None # 分布式 KV 缓存传输配置，用于多节点推理或分离式架构（Prefill 和 Decode 分离）时的缓存同步。
     """The configurations for distributed KV cache transfer."""
-    kv_events_config: KVEventsConfig | None = None
+    kv_events_config: KVEventsConfig | None = None # 分布式 KV 事件配置，用于发布 KV配置。，用于将 KV Cache 的分配/释放事件推送到外部系统。
     """The configurations for event publishing."""
-    ec_transfer_config: ECTransferConfig | None = None
+    ec_transfer_config: ECTransferConfig | None = None # 分布式 EC 缓存传输配置，用于多节点推理或分离式架构（Prefill 和 Decode 分离）时的缓存同步。
     """The configurations for distributed EC cache transfer."""
     # some opaque config, only used to provide additional information
     # for the hash computation, mainly used for testing, debugging or out of
@@ -234,8 +307,11 @@ class VllmConfig:
     """Additional config for specified platform. Different platforms may
     support different configs. Make sure the configs are valid for the platform
     you are using. Contents must be hashable."""
+    # 附加配置。一个不透明的字典，主要用于测试、调试或第三方平台（Out-of-Tree）注册自定义配置。
+    # 要求内容必须是可哈希的（hashable），因为它会被用来计算配置的唯一哈希值。
     instance_id: str = ""
     """The ID of the vLLM instance."""
+    # vLLM 实例 ID。用于在分布式或多实例环境下唯一标识当前引擎进程。
     optimization_level: OptimizationLevel = OptimizationLevel.O2
     """The optimization level. These levels trade startup time cost for
     performance, with -O0 having the best startup time and -O3 having the best
@@ -243,6 +319,7 @@ class VllmConfig:
     description."""
 
     def compute_hash(self) -> str:
+        # 配置哈希计算。用于唯一标识所有影响计算图结构的配置项
         """
         WARNING: Whenever a new field is added to this config,
         ensure that it is included in the factors list if
@@ -254,6 +331,9 @@ class VllmConfig:
         excluding anything before input ids/embeddings and after
         the final hidden states.
         """
+        # 关键设计：Docstring 中特别警告，只有影响计算图结构（从输入 ID 到最终隐藏状态）的配置才应被包含在内。
+        # 这主要用于 Prefix Caching（前缀缓存） 或 CUDA Graph 缓存，
+        # 确保只要计算图结构不变，就可以安全复用之前的缓存。
         factors: list[Any] = []
 
         # summarize vllm config
@@ -337,14 +417,42 @@ class VllmConfig:
         return hash_str
 
     def pad_for_cudagraph(self, batch_size: int) -> int:
+        # eagle.py和cudagraph.py中会调用这个函数来获取pad后的batch_size
+        # Q：为什么需要这个函数？
+        # A：为了在不同 batch size 下运行的 CUDA Graph 中，能够正确地分配资源和避免内存碎片。
+        # Q：为什么要 pad batch size？
+        # A：因为 CUDA Graph 只能在特定的 batch size 下运行。
+        # Q: 为什么要查表？ -- 只固定了表里的 batch size 才能运行 CUDA Graph，只有这几种
+        # A: 因为不同的 batch size 对应不同的 CUDA Graph 尺
+        # Q: 传入模型的尺寸是flating的，不再pading的cudagraph在哪个阶段
+        # A：vLLM 的输入是 Flattening（扁平化、非 Padding）的，但是 CUDA Graph 执行时，仍然可能需要对 Batch Size 进行 Padding。
+        # Scheduler 调度 -Input Preparation-Flattening-CUDA Graph Shape 适配（根据 Graph 捕获规格，确定 Batch Size、Token 数等执行维度，必要时 Padding）-CUDA Graph Replay
+        # Q： 为什么可以是向上而不能向下？ -- 显存地址、Tensor Shape 和计算操作之间的关系。
+                    # static_x 地址：0x1000
+                    # y 地址：       0x5000
+                    # z 地址：       0x6000
+
+                    # 计算操作：
+                    # 0x1000 -> 矩阵乘法 -> 0x5000
+                    # 0x5000 -> ReLU     -> 0x6000
+        # Q：为什么只对batch_size进行pad，不对seq长度进行pad？ 
         # if batch_size > self.compilation_config.max_cudagraph_capture_size,
         # it should raise an IndexError.
         # the caller should make sure the batch_size is within the range,
         # i.e., batch_size <= self.compilation_config.max_cudagraph_capture_size
+
         return self.compilation_config.bs_to_padded_graph_size[batch_size]
+        # 将实际的 batch_size 向上取整（Padding）到预捕获的 CUDA Graph 尺寸。
+        # 例如，如果 max_cudagraph_capture_size=8，
+        # 且 bs_to_padded_graph_size={1: 1, 2: 2, 3: 4, 4: 4, 5: 8, 6: 8, 7: 8, 8: 8}，那么：
+        # pad_for_cudagraph(3) -> 4
+        # CUDA Graph 只能在特定的 batch size 下运行。
+        # 这个方法通过查表 (bs_to_padded_graph_size) 找到大于等于当前 batch size 的最小合法尺寸。
+        # 如果请求的 batch size 超过了最大捕获尺寸，会抛出 IndexError。
 
     @property
     def needs_dp_coordinator(self) -> bool:
+        # 数据并行协调器判断
         """
         Determine if the DPCoordinator process is needed.
 
@@ -364,14 +472,17 @@ class VllmConfig:
             self.model_config is None
             or self.model_config.is_moe
             or not self.parallel_config.data_parallel_external_lb
-        )
+        ) 
+    # MoE 模型 且 data_parallel_size > 1：需要协调器来处理“波次协调（wave coordination）”。
+    # 非 MoE 模型 且使用内部/混合负载均衡模式：需要协调器来收集和发布队列统计信息，以进行跨 DP 秩的负载均衡。
 
     def enable_trace_function_call_for_thread(self) -> None:
+        # 程级函数追踪
         """
         Set up function tracing for the current thread,
         if enabled via the `VLLM_TRACE_FUNCTION` environment variable.
         """
-        if envs.VLLM_TRACE_FUNCTION:
+        if envs.VLLM_TRACE_FUNCTION: # 仅当环境变量 VLLM_TRACE_FUNCTION 被设置时生效。
             tmp_dir = tempfile.gettempdir()
             # add username to tmp_dir to avoid permission issues
             tmp_dir = os.path.join(tmp_dir, getpass.getuser())
@@ -379,6 +490,7 @@ class VllmConfig:
                 f"VLLM_TRACE_FUNCTION_for_process_{os.getpid()}"
                 f"_thread_{threading.get_ident()}_at_{datetime.now()}.log"
             ).replace(" ", "_")
+            # 在临时目录下生成包含进程 ID、线程 ID 和时间戳的唯一日志文件路径
             log_path = os.path.join(
                 tmp_dir,
                 "vllm",
@@ -386,10 +498,11 @@ class VllmConfig:
                 filename,
             )
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            enable_trace_function_call(log_path)
+            enable_trace_function_call(log_path) # 调用底层的 enable_trace_function_call 记录执行轨迹
+            # 用于极其底层的性能瓶颈排查
 
     @staticmethod
-    def _get_quantization_config(
+    def _get_quantization_config( # 获取并校验模型的量化配置。
         model_config: ModelConfig, load_config: LoadConfig
     ) -> QuantizationConfig | None:
         """Get the quantization config."""
@@ -421,8 +534,8 @@ class VllmConfig:
             return quant_config
         return None
 
-    @staticmethod
-    def get_quantization_config(
+    @staticmethod # 静态方法不需要实例化对象就可以采用
+    def get_quantization_config( # 获取并校验模型的量化配置。
         model_config: ModelConfig, load_config: LoadConfig
     ) -> QuantizationConfig | None:
         import copy
@@ -437,7 +550,8 @@ class VllmConfig:
         self,
         hf_config: PretrainedConfig,
         architectures: list[str] | None = None,
-    ) -> "VllmConfig":
+    ) -> "VllmConfig":  # 注入新的 HuggingFace 配置并返回一个全新的 VllmConfig 实例
+        # 将 HuggingFace的配置参数注入到VllmConfig
         if architectures is not None:
             hf_config = copy.deepcopy(hf_config)
             hf_config.architectures = architectures
@@ -463,6 +577,12 @@ class VllmConfig:
             # implemented with lambda functions and decided at run time.
             setattr(config_obj, key, value(self) if callable(value) else value)
 
+    # VllmConfig 的初始化后处理逻辑（Post-Init Logic）。
+    # 在 Python 的 dataclass 中，__post_init__ 方法会在对象初始化完成后自动执行。
+    # 由于 vLLM 的配置项极其复杂且相互依赖，
+    # 这段代码承担了“配置管家”的角色：它负责应用默认值、处理跨模块的配置联动、以及进行严格的兼容性校验。
+
+    # VllmConfig是以配置嵌套配置，汇聚了很多应用场景不同的配置，下面对这些配置的参数做了校验
     def _apply_optimization_level_defaults(self, defaults: dict[str, Any]) -> None:
         """Apply optimization level defaults using self as root.
 
@@ -477,6 +597,11 @@ class VllmConfig:
         Args:
             defaults: Dictionary of default values to apply.
         """
+        # “”“ ”使用self作为根应用优化级别默认值。递归地将默认值应用到嵌套配置对象中。
+        # 只有默认值中存在的字段才会被覆盖。如果用户配置没有为默认字段指定值，
+        # 并且在应用了所有用户选择后，默认字段仍然为None，则默认值将应用于该字段。
+        # 默认情况下，用户指定的字段不会被覆盖。
+        # Args:defaults：要应用的默认值字典。“”"
 
         def apply_recursive(config_obj: Any, config_defaults: dict[str, Any]) -> None:
             """Recursively apply defaults to config_obj, using self as root."""
@@ -498,6 +623,8 @@ class VllmConfig:
         Right now, this function reads the offloading settings from
         CacheConfig and configures the KVTransferConfig accordingly.
         """
+        # 基于VllmConfig中的顶层配置更新KVTransferConfig。
+        # 现在，这个函数从mcacheconfig中读取卸载设置，并相应地配置KVTransferConfig。
         # KV offloading is only activated when kv_offloading_size is set.
         if (kv_offloading_size := self.cache_config.kv_offloading_size) is None:
             return
@@ -532,6 +659,7 @@ class VllmConfig:
         """Verify configs are valid & consistent with each other."""
 
         # To give each torch profile run a unique instance name.
+        #给每个profile配置文件运行一个唯一的实例名。
         self.instance_id = f"{time.time_ns()}"
 
         self.try_verify_and_update_config()

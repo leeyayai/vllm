@@ -213,12 +213,17 @@ class Request:
         assert input_id < len(self.mm_features)
         return self.mm_features[input_id].mm_position.get_num_embeds
 
-    def record_event(
+    def record_event(  # 记录事件
         self,
-        event_type: EngineCoreEventType,
+        event_type: EngineCoreEventType,  # 事件类型
         timestamp: float | None = None,
     ) -> None:
-        self.events.append(EngineCoreEvent.new_event(event_type, timestamp))
+        self.events.append(EngineCoreEvent.new_event(event_type, timestamp))  # 新建事件
+        # 主要是时间的记录变化，用于profiler
+        # 新建的事件传入的时间，如果没传用当前时间；当被Scheduler 第一次选中它，
+        # 排队时间=当前时间-创建事件时的事件
+        # 后面如果发生抢占，还会记录 PREEMPTED事件。这些数据会随着 EngineCore 的输出传回 Frontend，
+        # 供其计算请求排队时间、Prefill 时间、Decode 时间和 Token 间隔等指标。
 
     def take_events(self) -> list[EngineCoreEvent] | None:
         if not self.events:

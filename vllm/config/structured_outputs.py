@@ -14,7 +14,7 @@ StructuredOutputsBackend = Literal[
     "auto", "xgrammar", "guidance", "outlines", "lm-format-enforcer"
 ]
 
-
+# 控制大模型在生成结构化数据（如 JSON、正则表达式匹配等）时，底层约束解码（Constrained Decoding）引擎的行为。
 @config
 @dataclass
 class StructuredOutputsConfig:
@@ -39,6 +39,7 @@ class StructuredOutputsConfig:
     reasoning_parser: str = ""
     """Select the reasoning parser depending on the model that you're using.
     This is used to parse the reasoning content into OpenAI API format."""
+    # 根据所使用的模型，选择相应的推理内容解析器。这主要用于将模型内部的推理过程（如思维链）解析并转换为标准的 OpenAI API 格式。
     reasoning_parser_plugin: str = ""
     """Path to a dynamically reasoning parser plugin that can be dynamically
     loaded and registered."""
