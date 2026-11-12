@@ -17,6 +17,42 @@ from vllm.v1.request import Request
 
 logger = init_logger(__name__)
 
+# block 元数据 → 池内空闲/哈希索引 → 请求级分配管理
+
+# KVCacheManager 负责“请求需要哪些 KV Block”；BlockPool 负责“从哪里拿 Block、如何释放和复用”；
+# KVCacheBlock 是一个 Block 的元数据对象；FreeKVCacheBlockQueue 管理空闲 Block；
+# BlockHashToBlockMap 通过前缀哈希查找缓存 Block；
+# KVCacheBlocks 则把 Manager 的内部结果包装起来，交给 Scheduler 使用
+
+#                     Scheduler
+#                         │
+#                         │ 调用 get_computed_blocks()
+#                         │       allocate_slots()
+#                         │       free()
+#                         ▼
+#                  KVCacheManager
+#                         │
+#                         │ 管理请求的 Block 列表
+#                         │ 通过 Coordinator 分组管理
+#                         ▼
+#               KV Cache Coordinator
+#                         │
+#                         │ 调用一个或多个
+#                         ▼
+#                SingleTypeKVCacheManager
+#                         │
+#              ┌──────────┴──────────┐
+#              │                     │
+#              ▼                     ▼
+#          BlockPool          请求 Block Table
+#              │
+#       ┌──────┼────────────┐
+#       │      │            │
+#       ▼      ▼            ▼
+#  KVCacheBlock  FreeQueue  BlockHashToBlockMap
+#       │          │            │
+#       └──────────┴────────────┘
+#              管理同一批物理 Block
 
 @dataclass
 class KVCacheBlocks:
