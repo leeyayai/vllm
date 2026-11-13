@@ -95,7 +95,7 @@ class Request:
         )
 
         # Used in async scheduling.
-        self.num_output_placeholders = 0
+        self.num_output_placeholders = 0 # 输出占位符数量，用于异步调度时的输出合并
         # Used in forced preemption (reset_prefix_cache) with async scheduling.
         self.discard_latest_async_tokens = False
 
@@ -105,8 +105,8 @@ class Request:
 
         # Multi-modal related
         self.mm_features = mm_features or []
-        self.num_encoder_inputs = len(self.mm_features)
-        self.has_encoder_inputs = self.num_encoder_inputs > 0
+        self.num_encoder_inputs = len(self.mm_features)  # encoder的输入长度，直接从模型结构可以得到
+        self.has_encoder_inputs = self.num_encoder_inputs > 0  # 
 
         # Read-only views
         # Prevent directly appending to these lists since
