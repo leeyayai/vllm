@@ -110,6 +110,21 @@ else:
 
 logger = init_logger(__name__)
 
+
+# vllm_config = engine_args.create_engine_config(
+#     usage_context=usage_context
+# )
+# EngineArgs 是面向用户的参数对象，而 VllmConfig 是引擎内部使用的配置对象。
+# 创建过程中，会将相关参数整理成不同的配置类，例如：
+# VllmConfig
+#     ├── model_config
+#     ├── cache_config
+#     ├── scheduler_config
+#     ├── parallel_config
+#     ├── compilation_config
+#     └── ...
+# arg_utils.py 可以理解为用户参数和内部 Engine Config 之间的转换层。
+
 # object is used to allow for special typing forms
 T = TypeVar("T")
 TypeHint: TypeAlias = type[Any] | object
@@ -441,6 +456,7 @@ class EngineArgs:
     max_num_partial_prefills: int = SchedulerConfig.max_num_partial_prefills
     max_long_partial_prefills: int = SchedulerConfig.max_long_partial_prefills
     long_prefill_token_threshold: int = SchedulerConfig.long_prefill_token_threshold
+    
     max_num_seqs: int | None = None
     max_logprobs: int = ModelConfig.max_logprobs
     logprobs_mode: LogprobsMode = ModelConfig.logprobs_mode
@@ -617,7 +633,12 @@ class EngineArgs:
                     )
 
     @staticmethod
-    def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
+    def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:  # 把参数注册为命令行选项
+        # 用户才可以在终端中使用：
+        # vllm serve Qwen/Qwen2.5-7B-Instruct \
+        #     --max-num-batched-tokens 8192 \
+        #     --long-prefill-token-threshold 2048 \
+        #     --long-prefill-token-threshold-adaptive
         """Shared CLI arguments for vLLM engine."""
 
         # Model arguments
