@@ -80,6 +80,10 @@ class SchedulerConfig:
     longer than this number of tokens."""
     # 预填充请求的阈值，超过该阈值的提示会被认为是“长提示”。默认值为 0，即所有提示都被认为是“短提示”。  
 
+    long_prefill_token_threshold_adaptive: bool = Field(default=False)
+    """If True, the long_prefill_token_threshold will be adaptive to the max_num_batched_tokens:
+    max_num_batched_tokens divided by the number of queued and running requests"""
+
     enable_chunked_prefill: bool = True
     """If True, prefill requests can be chunked based
     on the remaining `max_num_batched_tokens`.

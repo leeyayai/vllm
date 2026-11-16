@@ -90,6 +90,10 @@ class Scheduler(SchedulerInterface):
         self.structured_output_manager = structured_output_manager # 结构化输出管理器
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder # 是否是编码-解码模型
 
+        self.adaptive_long_prefill_threshold = (
+            self.scheduler_config.long_prefill_token_threshold_adaptive
+        ) # 自适应长提示预填充阈值
+
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
         # by update_from_outputs(). This is currently used in the multi-engine
@@ -199,6 +203,8 @@ class Scheduler(SchedulerInterface):
         # Priority queues for requests.  维护两个队列
         self.waiting = create_request_queue(self.policy)  # 等待调度请求队列
         self.running: list[Request] = []  # 运行中的请求队列
+        skipped_waiting_requests = create_request_queue(self.policy)
+
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -360,6 +366,19 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
+        num_eligible_reqs = (
+            len(self.running) + len(self.waiting) + len(self.skipped_waiting_requests)
+        )  # 可调度请求总数
+        long_prefill_token_threshold = (
+            self.scheduler_config.long_prefill_token_threshold
+            if num_eligible_reqs > 1
+            else 0
+        )
+        if long_prefill_token_threshold > 0 and self.adaptive_long_prefill_threshold:
+            long_prefill_token_threshold = max(
+                long_prefill_token_threshold, token_budget // num_eligible_reqs
+            )
+
         # First, schedule the RUNNING requests. 先处理 Running 请求
         # Running 队列里既可能有正在 Prefill 的请求，也可能有正在 Decode 的请求，还可能有处于 Chunked Prefill 过程中的请求
         req_index = 0
@@ -389,8 +408,11 @@ class Scheduler(SchedulerInterface):
                 + request.num_output_placeholders
                 - request.num_computed_tokens 
             )  # 计算当前请求本轮可分配的 token 数量
-            if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
-                num_new_tokens = self.scheduler_config.long_prefill_token_threshold  # 限制单个请求的 Long Prefill 长度
+            # if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
+            #     num_new_tokens = self.scheduler_config.long_prefill_token_threshold  # 限制单个请求的 Long Prefill 长度
+            # num_new_tokens = min(num_new_tokens, token_budget) # 计算本轮当前请求可分配的 token 数量
+            if 0 < self.long_prefill_token_threshold < num_new_tokens:
+                num_new_tokens = long_prefill_token_threshold  # 限制单个请求的 Long Prefill 长度
             num_new_tokens = min(num_new_tokens, token_budget) # 计算本轮当前请求可分配的 token 数量
 
             #  --------------限制不能超过模型最大长度-------------------------------
@@ -558,7 +580,7 @@ class Scheduler(SchedulerInterface):
         # Use a temporary RequestQueue to collect requests that need to be
         # skipped and put back at the head of the waiting queue later
         # 创建一个临时队列，保存本轮调度过程中暂时跳过的 Waiting 请求，之后再把它们放回 Waiting 队列前面。
-        skipped_waiting_requests = create_request_queue(self.policy) # 根据当前 Scheduler 使用的调度策略，创建对应类型的waiting队列。
+        # skipped_waiting_requests = create_request_queue(self.policy) # 根据当前 Scheduler 使用的调度策略，创建对应类型的waiting队列。
 
         # ----------------------------调度 Waiting 请求---------------------------------
         # Next, schedule the WAITING requests.
@@ -682,7 +704,8 @@ class Scheduler(SchedulerInterface):
                     # `request.num_prompt_tokens` to consider the resumed
                     # requests, which have output tokens.
                     num_new_tokens = request.num_tokens - num_computed_tokens
-                    threshold = self.scheduler_config.long_prefill_token_threshold
+                    # threshold = self.scheduler_config.long_prefill_token_threshold
+                    threshold = long_prefill_token_threshold
                     if 0 < threshold < num_new_tokens:  ## 长 Prefill 分块限制
                         num_new_tokens = threshold
 
