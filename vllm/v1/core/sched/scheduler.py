@@ -300,6 +300,32 @@ class Scheduler(SchedulerInterface):
         if self.log_stats and vllm_config.observability_config.enable_mfu_metrics:
             self.perf_metrics = ModelMetrics(vllm_config)
 
+        # self.local_prefill_interval = (
+        #     self.scheduler_config.prefill_schedule_interval
+        #     if self.parallel_config.data_parallel_size == 1
+        #     else 1
+        # )
+        # if self.local_prefill_interval > 1:
+        #     # Neither the hold nor its release is otherwise visible in logs or
+        #     # stats, which makes a misapplied cadence hard to diagnose.
+        #     logger.info_once(
+        #         "Prefill cadence: applying prefill_schedule_interval=%d "
+        #         "locally (this engine is not DP-coordinated); prefill is held "
+        #         "until %d executed steps have passed since the last "
+        #         "prefill-carrying step.",
+        #         self.local_prefill_interval,
+        #         self.local_prefill_interval,
+        #     )
+        # # A full interval back, so the first step is never gated.
+        # self.last_prefill_step = -self.local_prefill_interval
+        # # Steps that actually scheduled tokens. `current_step` counts every
+        # # schedule() call including empty ones, so it would expire the hold
+        # # early; it keeps its own meaning (next_decode_eligible_step).
+        # self.num_executed_steps = 0
+        # self.scheduler_reserve_full_isl = (
+        #     self.scheduler_config.scheduler_reserve_full_isl
+        # )
+
         if self.vllm_config.model_config.enable_return_routed_experts: # 是否开启返回MoE路由专家
             assert self.dcp_world_size == 1 and self.pcp_world_size == 1, (
                 "enable_return_routed_experts does not support context parallelism "
@@ -360,6 +386,25 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
+        ##  符合条件defer_prefills为True
+        # if (
+        #     not defer_prefills
+        #     and self.local_prefill_interval > 1
+        #     and not self.prefill_capacity_bound
+        #     # This call becomes executed step num_executed_steps + 1 if it
+        #     # schedules anything, and last_prefill_step is stamped on the same
+        #     # convention below.
+        #     and (self.num_executed_steps + 1) - self.last_prefill_step
+        #     < self.local_prefill_interval
+        #     and any(not r.is_prefill_chunk for r in self.running)
+        # ):
+        #     defer_prefills = True
+        
+        
+        # # Whether a waiting request was admitted with prompt left to compute.
+        # # Separate from `prefill_scheduled`, which covers only the running loop.
+        # prefill_admitted = False
+
         # First, schedule the RUNNING requests. 先处理 Running 请求
         # Running 队列里既可能有正在 Prefill 的请求，也可能有正在 Decode 的请求，还可能有处于 Chunked Prefill 过程中的请求
         req_index = 0
@@ -382,6 +427,20 @@ class Scheduler(SchedulerInterface):
                 # partial draft tokens since this prevents uniform decode optimizations.
                 req_index += 1
                 continue   # 当前请求不再参与本轮调度，跳过当前请求
+
+            # ------------------是否跳过当前请求------------------------------------
+            # if self.current_step < request.next_decode_eligible_step:  
+            #     # V2+PP+async: enforce `pp_size` steps between same-req decodes
+            #     # to match worker-side sampled-tokens broadcast slot ring cadence.
+            #     req_index += 1
+            #     continue
+
+            # if defer_prefills and request.is_prefill_chunk:
+            #     # DP prefill balancing: defer this in-progress prefill chunk to a
+            #     # cadence-aligned step; decodes still run to fill this step.
+            #     req_index += 1
+            #     continue
+
 
             # ----------------计算本轮当前请求可分配的 token 数量--------------------
             num_new_tokens = (

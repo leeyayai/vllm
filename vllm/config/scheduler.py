@@ -88,6 +88,14 @@ class SchedulerConfig:
     In real usage, this should be set in `EngineArgs.create_engine_config`.
     """
 
+    prefill_schedule_interval: int = Field(default=1, ge=1)
+    """Only admit prefill once every N engine steps, leaving the steps in
+    between to decode alone. 1 (the default) admits prefill on every step.
+
+    A deferred step carries no prefill at all, including chunks of an
+    already-admitted prompt, so a long prompt can take up to N times as many
+    steps to finish prefilling."""
+
     is_multimodal_model: bool = False
     """True if the model is multimodal."""
 
