@@ -73,7 +73,15 @@ class SchedulerConfig:
     long_prefill_token_threshold that will be prefilled concurrently. Setting
     this less than max_num_partial_prefills will allow shorter prompts to jump
     the queue in front of longer prompts in some cases, improving latency."""
-    # 允许同时进行“部分预填充”的最大长序列数（超过 long_prefill_token_threshold 的序列）。将其设置为小于 max_num_partial_prefills 可以在某些情况下让较短的提示优先于较长的提示，从而改善延迟。
+    # 允许同时进行“部分预填充”的最大长序列数（超过 long_prefill_token_threshold 的序列）。
+    # 将其设置为小于 max_num_partial_prefills 可以在某些情况下让较短的提示优先于较长的提示，从而改善延迟。
+
+    min_prefill_chunk_tokens: int = Field(default=0, ge=0)
+    """Defer smaller text prefill chunks while decode work is runnable, then
+    release them as a batch. 0 disables the optimization."""
+
+    max_prefill_chunk_delay_steps: int = Field(default=16, ge=1)
+    """Maximum scheduler steps to defer a small prefill chunk before release."""
 
     long_prefill_token_threshold: int = 0
     """For chunked prefill, a request is considered long if the prompt is
@@ -258,6 +266,14 @@ class SchedulerConfig:
                 self.long_prefill_token_threshold,
             )
 
+        if self.min_prefill_chunk_tokens > 0:
+            logger.info(
+                "Small prefill batching enabled: minimum=%d tokens, "
+                "maximum delay=%d scheduler steps.",
+                self.min_prefill_chunk_tokens,
+                self.max_prefill_chunk_delay_steps,
+            )
+
         self.verify_max_model_len(max_model_len)
 
     def verify_max_model_len(self, max_model_len: int) -> Self:
@@ -272,6 +288,11 @@ class SchedulerConfig:
                 "max_num_batched_tokens and makes vLLM reject longer "
                 "sequences. Please increase max_num_batched_tokens or "
                 "decrease max_model_len."
+            )
+
+        if self.min_prefill_chunk_tokens > 0 and not self.enable_chunked_prefill:
+            raise ValueError(
+                "Chunked prefill must be enabled when min_prefill_chunk_tokens > 0."
             )
 
         if self.max_num_batched_tokens < self.max_num_seqs:

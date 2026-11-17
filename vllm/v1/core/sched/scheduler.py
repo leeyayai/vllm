@@ -90,6 +90,9 @@ class Scheduler(SchedulerInterface):
         self.structured_output_manager = structured_output_manager # 结构化输出管理器
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder # 是否是编码-解码模型
 
+        # request_id -> (chunk size, first deferred scheduler step)
+        self._pending_small_prefill_chunks: dict[str, tuple[int, int]] = {}
+
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
         # by update_from_outputs(). This is currently used in the multi-engine
@@ -321,6 +324,68 @@ class Scheduler(SchedulerInterface):
                 model_config=self.vllm_config.model_config,
                 instance_id=self.vllm_config.instance_id,
             ) # 为专家路由信息读取器分配缓冲区，用于存储专家路由信息
+
+    def _has_eligible_decode_requests(  # 判断当前是否有 Decode 请求可以执行
+        self, token_budget: int, input_budget: int, draft_slots: int
+    ) -> bool:
+        if token_budget <= 0 or input_budget <= draft_slots:
+            return False
+
+        for request in self.running:
+            if (
+                request.is_prefill_chunk
+                or self.current_step < request.next_decode_eligible_step
+            ):
+                continue
+            if (
+                request.num_output_placeholders > 0
+                and request.num_computed_tokens + 2 - request.num_output_placeholders
+                >= request.num_prompt_tokens + request.max_tokens
+            ):
+                continue
+
+            num_new_tokens = (
+                request.num_tokens_with_spec
+                + request.num_output_placeholders
+                - request.num_computed_tokens
+            )
+            num_new_tokens = min(
+                num_new_tokens,
+                token_budget,
+                input_budget - draft_slots,
+                self.max_model_len
+                - request.num_computed_tokens
+                - self.num_sampled_tokens_per_step,
+            )
+            if num_new_tokens > 0:
+                return True
+        return False
+
+    def _defer_small_prefill_chunk(  # 决定是否暂缓小 Prefill Chunk
+        self,
+        request: Request,
+        num_new_tokens: int,
+        is_prefill: bool,
+        has_eligible_decode_requests: bool,
+        release_small_prefill_chunks: bool,
+    ) -> bool:
+        min_chunk_tokens = self.scheduler_config.min_prefill_chunk_tokens
+        if (
+            not has_eligible_decode_requests
+            or not is_prefill
+            or request.has_encoder_inputs
+            or num_new_tokens >= min_chunk_tokens  # Chunk 足够大，不需要延迟
+        ):
+            self._pending_small_prefill_chunks.pop(request.request_id, None)
+            return False
+
+        pending = self._pending_small_prefill_chunks.get(request.request_id)
+        first_deferred_step = self.current_step if pending is None else pending[1]
+        self._pending_small_prefill_chunks[request.request_id] = (
+            num_new_tokens,
+            first_deferred_step,
+        )
+        return not release_small_prefill_chunks
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:

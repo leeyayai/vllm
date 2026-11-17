@@ -511,6 +511,8 @@ class EngineArgs:
 
     enable_chunked_prefill: bool | None = None
     disable_chunked_mm_input: bool = SchedulerConfig.disable_chunked_mm_input
+    min_prefill_chunk_tokens: int = SchedulerConfig.min_prefill_chunk_tokens
+    max_prefill_chunk_delay_steps: int = SchedulerConfig.max_prefill_chunk_delay_steps
 
     disable_hybrid_kv_cache_manager: bool | None = (
         SchedulerConfig.disable_hybrid_kv_cache_manager
@@ -1138,6 +1140,14 @@ class EngineArgs:
             "--disable-chunked-mm-input", **scheduler_kwargs["disable_chunked_mm_input"]
         )
         scheduler_group.add_argument(
+            "--min-prefill-chunk-tokens",
+            **scheduler_kwargs["min_prefill_chunk_tokens"],
+        )
+        scheduler_group.add_argument(
+            "--max-prefill-chunk-delay-steps",
+            **scheduler_kwargs["max_prefill_chunk_delay_steps"],
+        )
+        scheduler_group.add_argument(
             "--scheduler-cls", **scheduler_kwargs["scheduler_cls"]
         )
         scheduler_group.add_argument(
@@ -1649,7 +1659,7 @@ class EngineArgs:
             target_parallel_config=parallel_config,
         )
 
-        scheduler_config = SchedulerConfig(
+        scheduler_config = SchedulerConfig(  # 加了参数在这里也要对齐
             runner_type=model_config.runner_type,
             max_num_batched_tokens=self.max_num_batched_tokens,
             max_num_seqs=self.max_num_seqs,
@@ -1663,6 +1673,8 @@ class EngineArgs:
             max_num_partial_prefills=self.max_num_partial_prefills,
             max_long_partial_prefills=self.max_long_partial_prefills,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
+            min_prefill_chunk_tokens=self.min_prefill_chunk_tokens,
+            max_prefill_chunk_delay_steps=self.max_prefill_chunk_delay_steps,
             disable_hybrid_kv_cache_manager=self.disable_hybrid_kv_cache_manager,
             async_scheduling=self.async_scheduling,
             stream_interval=self.stream_interval,
