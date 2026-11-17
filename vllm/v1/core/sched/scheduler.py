@@ -416,6 +416,44 @@ class Scheduler(SchedulerInterface):
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}  	#请求和本轮分配的 KV Cache blocks 的对应关系，每个请求本轮被安排计算多少 KV Cache 哈希块
         num_scheduled_tokens: dict[str, int] = {}  # 请求和本轮分配的 token 数量对应关系，每个请求本轮被安排计算多少 Token
         token_budget = self.max_num_scheduled_tokens  # 本轮可分配的 token 数量预算
+        
+        # min_prefill_chunk_tokens = self.scheduler_config.min_prefill_chunk_tokens
+        # small_prefill_batching_enabled = min_prefill_chunk_tokens > 0
+        # has_eligible_decode_requests = False
+        # release_small_prefill_chunks = False
+        # if small_prefill_batching_enabled:
+        #     has_eligible_decode_requests = self._has_eligible_decode_requests(
+        #         token_budget, input_budget, draft_slots
+        #     )
+        #     if not has_eligible_decode_requests:
+        #         self._pending_small_prefill_chunks.clear()
+        #     else:
+        #         self._pending_small_prefill_chunks = {
+        #             req_id: pending
+        #             for req_id, pending in self._pending_small_prefill_chunks.items()
+        #             if req_id in self.requests
+        #         }
+        #         pending_small_prefill_tokens = sum(
+        #             num_tokens
+        #             for num_tokens, _ in self._pending_small_prefill_chunks.values()
+        #         )
+        #         oldest_small_prefill_delay = max(
+        #             (
+        #                 self.current_step - first_deferred_step
+        #                 for _, first_deferred_step in (
+        #                     self._pending_small_prefill_chunks.values()
+        #                 )
+        #             ),
+        #             default=0,
+        #         )
+        #         release_small_prefill_chunks = bool(
+        #             self._pending_small_prefill_chunks
+        #         ) and (
+        #             pending_small_prefill_tokens >= min_prefill_chunk_tokens
+        #             or oldest_small_prefill_delay
+        #             >= self.scheduler_config.max_prefill_chunk_delay_steps
+        #         )
+        
         # Encoder-related.
         scheduled_encoder_inputs: dict[str, list[int]] = {}
         encoder_compute_budget = self.max_num_encoder_input_tokens  # 本轮可分配的 encoder 输入 token 数量预算，防止 Encoder 输入占用过多计算资源
@@ -504,6 +542,17 @@ class Scheduler(SchedulerInterface):
                 req_index += 1
                 continue # 跳过  -- 不是break -- 因为上面三种原因--PP暂放-- encoder预算不足导致不能调度，依旧有token_budge预算可以调度下一轮
 
+            #  --------------符合条件的小chunk：检查是否需要跳过当前请求，等待下一轮调度 -------------------------------
+            # if small_prefill_batching_enabled and self._defer_small_prefill_chunk(
+            #     request=request,
+            #     num_new_tokens=num_new_tokens,
+            #     is_prefill=request.is_prefill_chunk,
+            #     has_eligible_decode_requests=has_eligible_decode_requests,
+            #     release_small_prefill_chunks=release_small_prefill_chunks,
+            # ):
+            #     req_index += 1
+            #     continue
+            
             #  -------------- KV Cache Block 分配与请求抢占（Preemption） -------------------------------
             
             # Schedule newly needed KV blocks for the request.
@@ -800,7 +849,22 @@ class Scheduler(SchedulerInterface):
                 # 就需要计算 self._num_encoder_max_input_tokens 个 Token。
                 # 否则，就不计算任何 Token。
 
-                # 分配 KV Cache Block
+                # ----------------------------查是否有符合条件的跳过请求在skiped-waiting队列中
+                # if (
+                #     small_prefill_batching_enabled
+                #     and not load_kv_async
+                #     and self._defer_small_prefill_chunk(
+                #         request=request,
+                #         num_new_tokens=num_new_tokens,
+                #         is_prefill=num_computed_tokens < request.num_tokens - 1,
+                #         has_eligible_decode_requests=has_eligible_decode_requests,
+                #         release_small_prefill_chunks=release_small_prefill_chunks,
+                #     )
+                # ):
+                #     skip_request(request_queue)
+                #     continue
+
+                # ----------------------------分配 KV Cache Block----------------------------------
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request,
                     num_new_tokens,
